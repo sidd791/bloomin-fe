@@ -15,6 +15,9 @@ export function ChatArea({ conversationId }) {
   const [internalSessionKey, setInternalSessionKey] = useState(conversationId)
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
+  const targetTextRef = useRef('')
+  const revealedLenRef = useRef(0)
+  const revealTimerRef = useRef(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -65,18 +68,50 @@ export function ChatArea({ conversationId }) {
     setUploadedFile(null)
   }
 
+  useEffect(() => {
+    return () => stopReveal()
+  }, [])
+
   const handleStop = () => {
     if (internalSessionKey) {
       APIService.abortChat(internalSessionKey)
     }
+    stopReveal()
     setIsStreaming(false)
     setIsTyping(false)
+  }
+
+  const startReveal = (msgId) => {
+    if (revealTimerRef.current) return
+    revealTimerRef.current = setInterval(() => {
+      const target = targetTextRef.current
+      if (revealedLenRef.current < target.length) {
+        const remaining = target.length - revealedLenRef.current
+        const speed = remaining > 300 ? 3 : remaining > 100 ? 2 : 1
+        revealedLenRef.current = Math.min(revealedLenRef.current + speed, target.length)
+        const revealed = target.slice(0, revealedLenRef.current)
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === msgId ? { ...msg, content: revealed } : msg
+          )
+        )
+      }
+    }, 30)
+  }
+
+  const stopReveal = () => {
+    if (revealTimerRef.current) {
+      clearInterval(revealTimerRef.current)
+      revealTimerRef.current = null
+    }
   }
 
   const callChatAPI = async (message, sessionKey) => {
     setIsTyping(true)
     setIsStreaming(true)
     const assistantMessageId = Date.now() + 1
+    targetTextRef.current = ''
+    revealedLenRef.current = 0
 
     try {
       setMessages((prev) => [
@@ -89,27 +124,33 @@ export function ChatArea({ conversationId }) {
           isTypingStream: true,
         },
       ])
-      setIsTyping(false)
 
       await APIService.sendChatMessage(message, sessionKey, (fullText) => {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantMessageId
-              ? { ...msg, content: fullText }
-              : msg
-          )
-        )
+        setIsTyping(false)
+        targetTextRef.current = fullText
+        startReveal(assistantMessageId)
       })
 
+      await new Promise((resolve) => {
+        const waitInterval = setInterval(() => {
+          if (revealedLenRef.current >= targetTextRef.current.length) {
+            clearInterval(waitInterval)
+            resolve()
+          }
+        }, 30)
+      })
+
+      stopReveal()
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === assistantMessageId
-            ? { ...msg, isTypingStream: false }
+            ? { ...msg, content: targetTextRef.current, isTypingStream: false }
             : msg
         )
       )
     } catch (error) {
       console.error('Chat error:', error)
+      stopReveal()
       setMessages((prev) => [
         ...prev,
         {
@@ -124,30 +165,6 @@ export function ChatArea({ conversationId }) {
       setIsTyping(false)
       setIsStreaming(false)
     }
-  }
-
-  const simulateTyping = (fullText, msgId) => {
-    let i = 0
-    const interval = setInterval(() => {
-      const remaining = fullText.length - i
-      const chunkSize = remaining > 300 ? 2 : 1
-      i += chunkSize
-
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === msgId ? { ...msg, content: fullText.slice(0, i) } : msg
-        )
-      )
-
-      if (i >= fullText.length) {
-        clearInterval(interval)
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === msgId ? { ...msg, isTypingStream: false } : msg
-          )
-        )
-      }
-    }, 25)
   }
 
   const handleSubmit = async (e) => {
@@ -311,6 +328,7 @@ export function ChatArea({ conversationId }) {
     })
   }
 
+  console.log(messages,"messages")
   return (
     <div className="flex flex-col flex-1 overflow-hidden bg-background relative">
       {messages.length === 0 ? (
@@ -324,7 +342,7 @@ export function ChatArea({ conversationId }) {
         <>
           <div className="flex-1 overflow-y-auto px-2 py-3 sm:p-4 w-full flex flex-col items-center [scrollbar-gutter:stable]">
             <div className="w-full max-w-4xl space-y-4 sm:space-y-6 pb-4 sm:pb-6 mt-2 sm:mt-4">
-              {messages.map((msg) => (
+              {messages.filter((msg) => msg.content?.trim()).map((msg) => (
                 <div
                   key={msg.id}
                   className={`flex w-full min-w-0 ${
@@ -349,7 +367,7 @@ export function ChatArea({ conversationId }) {
                         </div>
                       )}
                       {msg.content && (
-                        <div className="rounded-2xl px-4 sm:px-5 py-3 text-sm whitespace-pre-wrap break-all sm:break-words [overflow-wrap:anywhere] bg-pink-500 text-white shadow-md min-w-0 overflow-hidden">
+                        <div className="rounded-2xl px-4 sm:px-5 py-3 text-sm whitespace-pre-wrap break-words bg-pink-500 text-white shadow-md min-w-0 overflow-hidden">
                           {renderMessageContent(
                             msg.content.length > 200
                               ? msg.content.slice(0, 200) + '...'
@@ -359,7 +377,7 @@ export function ChatArea({ conversationId }) {
                       )}
                     </div>
                   ) : (
-                    <div className="max-w-[92%] sm:max-w-[80%] rounded-2xl px-4 sm:px-5 py-3 text-sm whitespace-pre-wrap break-all sm:break-words [overflow-wrap:anywhere] bg-muted/50 text-foreground border shadow-sm min-w-0 overflow-hidden">
+                    <div className="max-w-[92%] sm:max-w-[80%] rounded-2xl px-4 sm:px-5 py-3 text-sm whitespace-pre-wrap break-words bg-muted/50 text-foreground border shadow-sm min-w-0 overflow-hidden">
                       {renderMessageContent(msg.content)}
                       {msg.isTypingStream && (
                         <span className="animate-pulse opacity-70 ml-[2px]">|</span>
@@ -370,10 +388,13 @@ export function ChatArea({ conversationId }) {
               ))}
               {isTyping && (
                 <div className="flex w-full justify-start">
-                  <div className="max-w-[92%] sm:max-w-[80%] rounded-2xl px-4 sm:px-5 py-4 bg-muted/50 text-foreground border shadow-sm flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-pink-500/80 animate-bounce cursor-default" />
-                    <div className="w-2 h-2 rounded-full bg-pink-500/80 animate-bounce [animation-delay:-.3s] cursor-default" />
-                    <div className="w-2 h-2 rounded-full bg-pink-500/80 animate-bounce [animation-delay:-.5s] cursor-default" />
+                  <div className="max-w-[92%] sm:max-w-[80%] rounded-2xl px-4 sm:px-5 py-4 text-foreground flex items-center gap-3">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-pink-500/80 animate-bounce cursor-default" />
+                      <div className="w-2 h-2 rounded-full bg-pink-500/80 animate-bounce [animation-delay:-.3s] cursor-default" />
+                      <div className="w-2 h-2 rounded-full bg-pink-500/80 animate-bounce [animation-delay:-.5s] cursor-default" />
+                    </div>
+                    <span className="text-sm text-muted-foreground animate-pulse">Thinking...</span>
                   </div>
                 </div>
               )}
