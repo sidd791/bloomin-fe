@@ -294,11 +294,14 @@ class GatewayWsClient {
   }
 
   async deleteSession(sessionKey) {
-    try {
-      await this.rpc('sessions.delete', { sessionKey });
-    } catch (err) {
-      console.error('[GatewayWS] sessions.delete failed:', err);
-      throw err;
+    const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080';
+    const resp = await fetch(
+      `${API_BASE}/chat/sessions/${encodeURIComponent(sessionKey)}`,
+      { method: 'DELETE' },
+    );
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Delete failed (${resp.status}): ${text}`);
     }
   }
 
