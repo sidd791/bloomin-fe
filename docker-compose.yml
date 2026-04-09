@@ -1,0 +1,7 @@
+services:
+  frontend:
+    build: .
+    container_name: bloomin-fe
+    ports:
+      - "3000:3000"
+    restart: always
