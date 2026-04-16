@@ -1,10 +1,14 @@
 import React from 'react'
 import { Button } from '@/components/ui/button'
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Radar, Music, LogOut, User } from 'lucide-react'
 import { ThemeToggle } from './theme-toggle'
 import { SidebarTrigger } from '@/components/ui/sidebar'
+import { useAuth } from '../contexts/auth-context'
 
 export function Header() {
+  const { user, logout } = useAuth()
+
   return (
     <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
       <div className="flex h-14 items-center justify-between px-4">
@@ -28,7 +32,61 @@ export function Header() {
         </div>
 
         <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-muted-foreground hover:text-foreground"
+            asChild
+          >
+            <a href="/tiktok-scraper/" target="_blank" rel="noopener noreferrer">
+              <Music className="h-4 w-4" />
+              <span className="hidden sm:inline">TikTok Scraper</span>
+            </a>
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-muted-foreground hover:text-foreground"
+            asChild
+          >
+            <a href="/reddit-scraper/" target="_blank" rel="noopener noreferrer">
+              <Radar className="h-4 w-4" />
+              <span className="hidden sm:inline">Reddit Scraper</span>
+            </a>
+          </Button>
           <ThemeToggle />
+
+          {user && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5 text-muted-foreground hover:text-foreground"
+                >
+                  <div className="h-6 w-6 rounded-full bg-pink-500 flex items-center justify-center">
+                    <span className="text-xs font-medium text-white">
+                      {(user.name || user.email || '?')[0].toUpperCase()}
+                    </span>
+                  </div>
+                  <span className="hidden sm:inline text-sm">
+                    {user.name || user.email}
+                  </span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <div className="px-2 py-1.5">
+                  <p className="text-sm font-medium">{user.name}</p>
+                  <p className="text-xs text-muted-foreground">{user.email}</p>
+                </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={logout} className="text-destructive">
+                  <LogOut className="mr-2 h-4 w-4" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
     </header>

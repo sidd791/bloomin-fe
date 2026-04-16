@@ -14,4 +14,25 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://187.77.135.46:8080',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+      '/tiktok-scraper': {
+        target: 'http://72.61.162.137:8502',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/tiktok-scraper/, ''),
+        ws: true,
+      },
+      '/reddit-scraper': {
+        target: 'http://187.127.96.93',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/reddit-scraper/, ''),
+        ws: true,
+      },
+    },
+  },
 })

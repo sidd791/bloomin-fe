@@ -26,7 +26,6 @@ import {
 } from '@/components/ui/sidebar'
 import { SearchDialog } from './search-dialog'
 import { APIService } from '../services/api.service'
-import { gatewayWs } from '../services/gateway-ws'
 
 export function AppSidebar({ onNewChat }) {
   const [isSearchOpen, setIsSearchOpen] = useState(false)
@@ -34,7 +33,6 @@ export function AppSidebar({ onNewChat }) {
   const [isDeleteOpen, setIsDeleteOpen] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState(null)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [wsReady, setWsReady] = useState(gatewayWs.connected)
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -47,27 +45,36 @@ export function AppSidebar({ onNewChat }) {
       const history = await APIService.getConversationsList()
       setChatHistory(history)
     } catch (err) {
-      console.error('Failed to fetch sidebar conversations:', err)
+      if (err.status !== 401) {
+        console.error('Failed to fetch sidebar conversations:', err)
+      }
     }
   }
 
-  const handleDelete = async (sessionKey) => {
+  const handleDelete = async (sessionId) => {
     try {
-      await APIService.deleteConversation(sessionKey)
-      setChatHistory((prev) => prev.filter((item) => String(item.id) !== String(sessionKey)))
+      await APIService.deleteConversation(sessionId)
+      setChatHistory((prev) => prev.filter((item) => String(item.id) !== String(sessionId)))
+      localStorage.removeItem(`messages_${sessionId}`)
 
-      if (currentChatId === String(sessionKey)) {
+      if (currentChatId === String(sessionId)) {
         navigate('/')
       }
       toast.success('Conversation deleted successfully.')
     } catch (err) {
-      console.error('Failed to delete conversation:', err)
-      toast.error('Failed to delete conversation. Please try again.')
+      if (err.status === 404) {
+        setChatHistory((prev) => prev.filter((item) => String(item.id) !== String(sessionId)))
+        toast.error('Session not found. Refreshing list.')
+        fetchConversations()
+      } else {
+        console.error('Failed to delete conversation:', err)
+        toast.error('Failed to delete conversation. Please try again.')
+      }
     }
   }
 
-  const openDeleteConfirm = (sessionKey) => {
-    setDeleteTargetId(sessionKey)
+  const openDeleteConfirm = (sessionId) => {
+    setDeleteTargetId(sessionId)
     setIsDeleteOpen(true)
   }
 
@@ -85,28 +92,9 @@ export function AppSidebar({ onNewChat }) {
   }
 
   useEffect(() => {
-    gatewayWs.connect()
-
-    const unsubConnected = gatewayWs.on('_connected', () => {
-      setWsReady(true)
-      fetchConversations()
-    })
-
-    const unsubSessionsChanged = gatewayWs.on('sessions.changed', () => {
-      fetchConversations()
-    })
-
-    if (gatewayWs.connected) {
-      fetchConversations()
-    }
-
+    fetchConversations()
     window.addEventListener('chat-created', fetchConversations)
-
-    return () => {
-      unsubConnected()
-      unsubSessionsChanged()
-      window.removeEventListener('chat-created', fetchConversations)
-    }
+    return () => window.removeEventListener('chat-created', fetchConversations)
   }, [])
 
   return (
@@ -163,12 +151,7 @@ export function AppSidebar({ onNewChat }) {
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>
-            Your chats
-            {!wsReady && (
-              <span className="ml-2 text-xs text-muted-foreground">(connecting...)</span>
-            )}
-          </SidebarGroupLabel>
+          <SidebarGroupLabel>Your chats</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {chatHistory.map((item) => {

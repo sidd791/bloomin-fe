@@ -3,7 +3,25 @@ import { Button } from '@/components/ui/button'
 import { Plus, X, FileText, ArrowUp, Square } from 'lucide-react'
 import { RotatingHeadlines } from './rotating-headlines'
 import { APIService } from '../services/api.service'
-import { gatewayWs } from '../services/gateway-ws'
+import { toast } from 'sonner'
+
+function loadMessages(sessionId) {
+  if (!sessionId) return []
+  try {
+    const raw = localStorage.getItem(`messages_${sessionId}`)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function saveMessages(sessionId, messages) {
+  if (!sessionId) return
+  const serializable = messages.map(({ id, content, isUser, timestamp, attachedFile }) => ({
+    id, content, isUser, timestamp, attachedFile,
+  }))
+  localStorage.setItem(`messages_${sessionId}`, JSON.stringify(serializable))
+}
 
 export function ChatArea({ conversationId }) {
   const [inputValue, setInputValue] = useState('')
@@ -12,12 +30,15 @@ export function ChatArea({ conversationId }) {
   const [uploadedFile, setUploadedFile] = useState(null)
   const [isStreaming, setIsStreaming] = useState(false)
 
-  const [internalSessionKey, setInternalSessionKey] = useState(conversationId)
+  const sessionIdRef = useRef(
+    conversationId && !String(conversationId).startsWith('new-') ? conversationId : null,
+  )
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const targetTextRef = useRef('')
   const revealedLenRef = useRef(0)
   const revealTimerRef = useRef(null)
+  const abortControllerRef = useRef(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -29,31 +50,15 @@ export function ChatArea({ conversationId }) {
 
   useEffect(() => {
     if (!conversationId || String(conversationId).startsWith('new-')) {
+      setMessages([])
+      sessionIdRef.current = null
       return
     }
-
-    setInternalSessionKey(conversationId)
-
-    const fetchHistory = async () => {
-      try {
-        const fetchedMessages = await APIService.getConversationHistory(conversationId)
-
-        if (fetchedMessages.length > 0) {
-          const mappedMessages = fetchedMessages.map((msg, index) => ({
-            id: msg.id || `${Date.now()}-${index}`,
-            content: msg.content || '',
-            isUser: msg.is_user || msg.role === 'user',
-            timestamp: msg.timestamp || new Date(),
-            isTypingStream: false,
-          }))
-          setMessages(mappedMessages)
-        }
-      } catch (err) {
-        console.error('Failed to fetch conversation history:', err)
-      }
-    }
-
-    fetchHistory()
+    sessionIdRef.current = conversationId
+    const stored = loadMessages(conversationId)
+    setMessages(
+      stored.map((msg) => ({ ...msg, isTypingStream: false })),
+    )
   }, [conversationId])
 
   const handleFileUpload = async (event) => {
@@ -73,9 +78,7 @@ export function ChatArea({ conversationId }) {
   }, [])
 
   const handleStop = () => {
-    if (internalSessionKey) {
-      APIService.abortChat(internalSessionKey)
-    }
+    abortControllerRef.current?.abort()
     stopReveal()
     setIsStreaming(false)
     setIsTyping(false)
@@ -92,8 +95,8 @@ export function ChatArea({ conversationId }) {
         const revealed = target.slice(0, revealedLenRef.current)
         setMessages((prev) =>
           prev.map((msg) =>
-            msg.id === msgId ? { ...msg, content: revealed } : msg
-          )
+            msg.id === msgId ? { ...msg, content: revealed } : msg,
+          ),
         )
       }
     }, 30)
@@ -106,12 +109,15 @@ export function ChatArea({ conversationId }) {
     }
   }
 
-  const callChatAPI = async (message, sessionKey) => {
+  const callChatAPI = async (message, sessionId) => {
     setIsTyping(true)
     setIsStreaming(true)
     const assistantMessageId = Date.now() + 1
     targetTextRef.current = ''
     revealedLenRef.current = 0
+
+    const controller = new AbortController()
+    abortControllerRef.current = controller
 
     try {
       setMessages((prev) => [
@@ -120,16 +126,21 @@ export function ChatArea({ conversationId }) {
           id: assistantMessageId,
           content: '',
           isUser: false,
-          timestamp: new Date(),
+          timestamp: new Date().toISOString(),
           isTypingStream: true,
         },
       ])
 
-      await APIService.sendChatMessage(message, sessionKey, (fullText) => {
-        setIsTyping(false)
-        targetTextRef.current = fullText
-        startReveal(assistantMessageId)
-      })
+      await APIService.sendChatMessage(
+        sessionId,
+        message,
+        (fullText) => {
+          setIsTyping(false)
+          targetTextRef.current = fullText
+          startReveal(assistantMessageId)
+        },
+        controller.signal,
+      )
 
       await new Promise((resolve) => {
         const waitInterval = setInterval(() => {
@@ -141,29 +152,46 @@ export function ChatArea({ conversationId }) {
       })
 
       stopReveal()
-      setMessages((prev) =>
-        prev.map((msg) =>
+      setMessages((prev) => {
+        const updated = prev.map((msg) =>
           msg.id === assistantMessageId
             ? { ...msg, content: targetTextRef.current, isTypingStream: false }
-            : msg
+            : msg,
         )
-      )
+        saveMessages(sessionId, updated)
+        return updated
+      })
     } catch (error) {
-      console.error('Chat error:', error)
+      if (error.name === 'AbortError') return
+
       stopReveal()
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now() + 1,
-          content: 'Error sending message. Please try again.',
-          isUser: false,
-          timestamp: new Date(),
-          isTypingStream: false,
-        },
-      ])
+      const errContent =
+        error.status === 502
+          ? 'AI service is currently unavailable. Please try again later.'
+          : 'Error sending message. Please try again.'
+
+      if (error.status === 502) {
+        toast.error('AI service unavailable')
+      }
+
+      setMessages((prev) => {
+        const updated = [
+          ...prev.filter((m) => m.id !== assistantMessageId),
+          {
+            id: Date.now() + 2,
+            content: errContent,
+            isUser: false,
+            timestamp: new Date().toISOString(),
+            isTypingStream: false,
+          },
+        ]
+        saveMessages(sessionId, updated)
+        return updated
+      })
     } finally {
       setIsTyping(false)
       setIsStreaming(false)
+      abortControllerRef.current = null
     }
   }
 
@@ -184,7 +212,7 @@ export function ChatArea({ conversationId }) {
         id: Date.now(),
         content: text,
         isUser: true,
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
         isTypingStream: false,
         attachedFile: activeFile ? { name: activeFile.name } : null,
       }
@@ -195,26 +223,33 @@ export function ChatArea({ conversationId }) {
         textareaRef.current.style.height = '56px'
       }
 
-      let sessionKey = internalSessionKey
+      let sessionId = sessionIdRef.current
+      let isNewSession = false
 
-      if (!sessionKey || String(sessionKey).startsWith('new-')) {
+      if (!sessionId) {
         try {
           const label = text.length > 40 ? text.substring(0, 40) + '...' : text
-          const result = await gatewayWs.createSession(label)
-          sessionKey = result?.sessionKey || result?.key || `session-${Date.now()}`
-          setInternalSessionKey(sessionKey)
-          window.history.pushState({}, '', `/chat/${sessionKey}`)
-          window.dispatchEvent(new Event('chat-created'))
+          const result = await APIService.createSession(label)
+          sessionId = result?.id
+          sessionIdRef.current = sessionId
+          isNewSession = true
+
+          saveMessages(sessionId, [userMessage])
         } catch {
-          sessionKey = `session-${Date.now()}`
-          setInternalSessionKey(sessionKey)
+          toast.error('Failed to create session. Please try again.')
+          return
         }
       }
 
       await callChatAPI(
         apiText || (activeFile ? `Please analyze this document: ${activeFile.name}` : ''),
-        sessionKey
+        sessionId,
       )
+
+      if (isNewSession) {
+        window.history.replaceState({}, '', `/chat/${sessionId}`)
+        window.dispatchEvent(new Event('chat-created'))
+      }
     }
   }
 
@@ -328,7 +363,6 @@ export function ChatArea({ conversationId }) {
     })
   }
 
-  console.log(messages,"messages")
   return (
     <div className="flex flex-col flex-1 overflow-hidden bg-background relative">
       {messages.length === 0 ? (
@@ -371,7 +405,7 @@ export function ChatArea({ conversationId }) {
                           {renderMessageContent(
                             msg.content.length > 200
                               ? msg.content.slice(0, 200) + '...'
-                              : msg.content
+                              : msg.content,
                           )}
                         </div>
                       )}

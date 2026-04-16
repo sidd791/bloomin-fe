@@ -1,9 +1,11 @@
 import React, { useEffect } from 'react'
-import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, useNavigate, useParams, Navigate } from 'react-router-dom'
+import { AuthProvider, useAuth } from './contexts/auth-context'
 import { AppSidebar } from './components/sidebar'
 import { Header } from './components/header'
 import { ChatArea } from './components/chat-area'
 import { ServerHealth } from './components/server-health'
+import { AuthPage } from './pages/auth-page'
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar'
 import { Toaster } from '@/components/ui/sonner'
 
@@ -20,12 +22,27 @@ function useThemeInit() {
   }, [])
 }
 
+function ProtectedRoute({ children }) {
+  const { user, loading } = useAuth()
+
+  if (loading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-background">
+        <div className="h-8 w-8 border-4 border-pink-500/30 border-t-pink-500 rounded-full animate-spin" />
+      </div>
+    )
+  }
+
+  if (!user) return <Navigate to="/login" replace />
+  return children
+}
+
 const ChatLayout = () => {
   const navigate = useNavigate()
   const { chatId } = useParams()
 
   const createNewChat = () => {
-    navigate(`/chat/new-${Date.now()}`);
+    navigate(`/chat/new-${Date.now()}`)
   }
 
   useEffect(() => {
@@ -69,12 +86,15 @@ const ServersLayout = () => {
 const App = () => {
   return (
     <Router>
-      <Routes>
-        <Route path="/" element={<ChatLayout />} />
-        <Route path="/chat/:chatId" element={<ChatLayout />} />
-        <Route path="/servers" element={<ServersLayout />} />
-      </Routes>
-      <Toaster className="chat-toaster" position="top-center" expand={false} closeButton />
+      <AuthProvider>
+        <Routes>
+          <Route path="/login" element={<AuthPage />} />
+          <Route path="/" element={<ProtectedRoute><ChatLayout /></ProtectedRoute>} />
+          <Route path="/chat/:chatId" element={<ProtectedRoute><ChatLayout /></ProtectedRoute>} />
+          <Route path="/servers" element={<ProtectedRoute><ServersLayout /></ProtectedRoute>} />
+        </Routes>
+        <Toaster className="chat-toaster" position="top-center" expand={false} closeButton />
+      </AuthProvider>
     </Router>
   )
 }
