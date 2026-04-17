@@ -19,10 +19,10 @@ export const APIService = {
     return await apiClient.delete(`/chat/sessions/${sessionId}`);
   },
 
-  sendChatMessage(sessionId, content, onDelta, signal) {
+  sendChatMessage(sessionId, content, onDelta, signal, mode = 'thinking') {
     return apiClient.streamPost(
       `/chat/sessions/${sessionId}/messages`,
-      { content, stream: true },
+      { content, stream: true, mode },
       onDelta,
       signal,
     );

@@ -1,9 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { Plus, X, FileText, ArrowUp, Square } from 'lucide-react'
+import { Plus, X, FileText, ArrowUp, Square, Zap, Scale, Brain, Clock } from 'lucide-react'
 import { RotatingHeadlines } from './rotating-headlines'
 import { APIService } from '../services/api.service'
 import { toast } from 'sonner'
+
+const CHAT_MODES = [
+  { value: 'fast', label: 'Fast', icon: Zap, tooltip: 'Fastest response (~2s). Uses historical data only.' },
+  { value: 'balanced', label: 'Balanced', icon: Scale, tooltip: 'Quick response (~5-8s). Live data accessible.' },
+  { value: 'thinking', label: 'Thinking', icon: Brain, tooltip: 'Deep analysis (~10-15s). Full agent with all data sources.' },
+]
 
 function loadMessages(sessionId) {
   if (!sessionId) return []
@@ -17,8 +23,8 @@ function loadMessages(sessionId) {
 
 function saveMessages(sessionId, messages) {
   if (!sessionId) return
-  const serializable = messages.map(({ id, content, isUser, timestamp, attachedFile }) => ({
-    id, content, isUser, timestamp, attachedFile,
+  const serializable = messages.map(({ id, content, isUser, timestamp, attachedFile, responseTime }) => ({
+    id, content, isUser, timestamp, attachedFile, responseTime,
   }))
   localStorage.setItem(`messages_${sessionId}`, JSON.stringify(serializable))
 }
@@ -29,6 +35,7 @@ export function ChatArea({ conversationId }) {
   const [isTyping, setIsTyping] = useState(false)
   const [uploadedFile, setUploadedFile] = useState(null)
   const [isStreaming, setIsStreaming] = useState(false)
+  const [chatMode, setChatMode] = useState('thinking')
 
   const sessionIdRef = useRef(
     conversationId && !String(conversationId).startsWith('new-') ? conversationId : null,
@@ -109,10 +116,11 @@ export function ChatArea({ conversationId }) {
     }
   }
 
-  const callChatAPI = async (message, sessionId) => {
+  const callChatAPI = async (message, sessionId, mode) => {
     setIsTyping(true)
     setIsStreaming(true)
     const assistantMessageId = Date.now() + 1
+    const startTime = performance.now()
     targetTextRef.current = ''
     revealedLenRef.current = 0
 
@@ -140,7 +148,10 @@ export function ChatArea({ conversationId }) {
           startReveal(assistantMessageId)
         },
         controller.signal,
+        mode,
       )
+
+      const elapsed = ((performance.now() - startTime) / 1000).toFixed(1)
 
       await new Promise((resolve) => {
         const waitInterval = setInterval(() => {
@@ -155,7 +166,7 @@ export function ChatArea({ conversationId }) {
       setMessages((prev) => {
         const updated = prev.map((msg) =>
           msg.id === assistantMessageId
-            ? { ...msg, content: targetTextRef.current, isTypingStream: false }
+            ? { ...msg, content: targetTextRef.current, isTypingStream: false, responseTime: elapsed }
             : msg,
         )
         saveMessages(sessionId, updated)
@@ -244,6 +255,7 @@ export function ChatArea({ conversationId }) {
       await callChatAPI(
         apiText || (activeFile ? `Please analyze this document: ${activeFile.name}` : ''),
         sessionId,
+        chatMode,
       )
 
       if (isNewSession) {
@@ -253,8 +265,32 @@ export function ChatArea({ conversationId }) {
     }
   }
 
+  const renderModeSelector = () => (
+    <div className="flex items-center justify-center mb-2">
+      <div className="inline-flex items-center gap-0.5 p-0.5 rounded-full bg-muted/50 border border-border/50">
+        {CHAT_MODES.map(({ value, label, icon: Icon, tooltip }) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setChatMode(value)}
+            title={tooltip}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${
+              chatMode === value
+                ? 'bg-pink-500 text-white shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+
   const renderInputForm = () => (
     <form onSubmit={handleSubmit} className="w-full">
+      {renderModeSelector()}
       <div className="flex flex-col bg-muted/30 border-2 border-pink-500 rounded-[28px] overflow-hidden focus-within:border-pink-600 focus-within:ring-2 focus-within:ring-pink-500/20 transition-all shadow-sm">
         {uploadedFile && (
           <div className="px-4 pt-4 pb-2">
@@ -411,10 +447,18 @@ export function ChatArea({ conversationId }) {
                       )}
                     </div>
                   ) : (
-                    <div className="max-w-[92%] sm:max-w-[80%] rounded-2xl px-4 sm:px-5 py-3 text-sm whitespace-pre-wrap break-words bg-muted/50 text-foreground border shadow-sm min-w-0 overflow-hidden">
-                      {renderMessageContent(msg.content)}
-                      {msg.isTypingStream && (
-                        <span className="animate-pulse opacity-70 ml-[2px]">|</span>
+                    <div className="flex flex-col gap-1 max-w-[92%] sm:max-w-[80%] min-w-0">
+                      <div className="rounded-2xl px-4 sm:px-5 py-3 text-sm whitespace-pre-wrap break-words bg-muted/50 text-foreground border shadow-sm overflow-hidden">
+                        {renderMessageContent(msg.content)}
+                        {msg.isTypingStream && (
+                          <span className="animate-pulse opacity-70 ml-[2px]">|</span>
+                        )}
+                      </div>
+                      {msg.responseTime && (
+                        <div className="flex items-center gap-1 px-2 text-[11px] text-muted-foreground/60">
+                          <Clock className="h-3 w-3" />
+                          <span>{msg.responseTime}s</span>
+                        </div>
                       )}
                     </div>
                   )}
