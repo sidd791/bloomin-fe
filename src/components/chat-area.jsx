@@ -1,14 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { Plus, X, FileText, ArrowUp, Square, Zap, Scale, Brain, Clock } from 'lucide-react'
+import { Plus, X, FileText, ArrowUp, Square, Scale, Brain, Clock } from 'lucide-react'
 import { RotatingHeadlines } from './rotating-headlines'
 import { APIService } from '../services/api.service'
 import { toast } from 'sonner'
 
 const CHAT_MODES = [
-  { value: 'fast', label: 'Fast', icon: Zap, tooltip: 'Fastest response (~2s). Uses historical data only.' },
-  { value: 'balanced', label: 'Balanced', icon: Scale, tooltip: 'Quick response (~5-8s). Live data accessible.' },
-  { value: 'thinking', label: 'Thinking', icon: Brain, tooltip: 'Deep analysis (~10-15s). Full agent with all data sources.' },
+  {
+    value: 'balanced',
+    label: 'Balanced',
+    icon: Scale,
+    tooltip: 'Same agent power, less thinking. Faster replies, capped at ~150 words.',
+  },
+  {
+    value: 'thinking',
+    label: 'Thinking',
+    icon: Brain,
+    tooltip: 'Full reasoning. Multiple tool calls, in-depth answers. Slower.',
+  },
 ]
 
 function loadMessages(sessionId) {

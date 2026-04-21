@@ -1,5 +1,14 @@
 import { apiClient } from './api-client';
 
+// Backend only accepts 'balanced' | 'thinking'. Silently migrate any stale
+// 'fast' value (e.g. cached component state from an older build) to
+// 'balanced' so existing sessions don't hit a 422 on next send.
+function normalizeMode(mode) {
+  if (mode === 'balanced' || mode === 'thinking') return mode;
+  if (mode === 'fast') return 'balanced';
+  return 'thinking';
+}
+
 export const APIService = {
   async getConversationsList() {
     const sessions = await apiClient.get('/chat/sessions');
@@ -22,7 +31,7 @@ export const APIService = {
   sendChatMessage(sessionId, content, onDelta, signal, mode = 'thinking') {
     return apiClient.streamPost(
       `/chat/sessions/${sessionId}/messages`,
-      { content, stream: true, mode },
+      { content, stream: true, mode: normalizeMode(mode) },
       onDelta,
       signal,
     );
