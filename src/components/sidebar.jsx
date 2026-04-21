@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Search, SquarePen, MoreHorizontal, Trash2, Activity } from 'lucide-react'
+import { Search, SquarePen, MoreHorizontal, Trash2, Activity, Wrench, ChevronDown, Music, Radar, LayoutTemplate } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { toast } from 'sonner'
 import {
@@ -33,6 +33,7 @@ export function AppSidebar({ onNewChat }) {
   const [isDeleteOpen, setIsDeleteOpen] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState(null)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [isToolsOpen, setIsToolsOpen] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -197,6 +198,57 @@ export function AppSidebar({ onNewChat }) {
       </SidebarContent>
 
       <SidebarFooter className="p-4 border-t border-sidebar-border">
+        <div className="flex flex-col">
+          <Button
+            variant="ghost"
+            className="w-full justify-start"
+            onClick={() => setIsToolsOpen((prev) => !prev)}
+            aria-expanded={isToolsOpen}
+          >
+            <Wrench className="mr-2 h-4 w-4" />
+            <span className="flex-1 text-left">Bloombrain Tools</span>
+            <ChevronDown
+              className={`h-4 w-4 transition-transform ${isToolsOpen ? 'rotate-180' : ''}`}
+            />
+          </Button>
+          {isToolsOpen && (
+            <div className="mt-1 ml-2 flex flex-col gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-muted-foreground hover:text-foreground"
+                asChild
+              >
+                <a href="/tiktok-scraper/" target="_blank" rel="noopener noreferrer">
+                  <Music className="mr-2 h-4 w-4" />
+                  TikTok Scraper
+                </a>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-muted-foreground hover:text-foreground"
+                asChild
+              >
+                <a href="/reddit-scraper/" target="_blank" rel="noopener noreferrer">
+                  <Radar className="mr-2 h-4 w-4" />
+                  Reddit Scraper
+                </a>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-muted-foreground hover:text-foreground"
+                asChild
+              >
+                <a href="/landing-page/" target="_blank" rel="noopener noreferrer">
+                  <LayoutTemplate className="mr-2 h-4 w-4" />
+                  Landing Pages
+                </a>
+              </Button>
+            </div>
+          )}
+        </div>
         <Button
           variant="ghost"
           className="w-full justify-start"

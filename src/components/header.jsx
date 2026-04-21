@@ -1,7 +1,7 @@
 import React from 'react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
-import { Radar, Music, LogOut, User } from 'lucide-react'
+import { LogOut } from 'lucide-react'
 import { ThemeToggle } from './theme-toggle'
 import { SidebarTrigger } from '@/components/ui/sidebar'
 import { useAuth } from '../contexts/auth-context'
@@ -32,28 +32,6 @@ export function Header() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-muted-foreground hover:text-foreground"
-            asChild
-          >
-            <a href="/tiktok-scraper/" target="_blank" rel="noopener noreferrer">
-              <Music className="h-4 w-4" />
-              <span className="hidden sm:inline">TikTok Scraper</span>
-            </a>
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-muted-foreground hover:text-foreground"
-            asChild
-          >
-            <a href="/reddit-scraper/" target="_blank" rel="noopener noreferrer">
-              <Radar className="h-4 w-4" />
-              <span className="hidden sm:inline">Reddit Scraper</span>
-            </a>
-          </Button>
           <ThemeToggle />
 
           {user && (

@@ -33,6 +33,12 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/reddit-scraper/, ''),
         ws: true,
       },
+      '/landing-page': {
+        target: 'http://187.124.217.143',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/landing-page/, ''),
+        ws: true,
+      },
     },
   },
 })
