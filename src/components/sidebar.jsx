@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Search, SquarePen, MoreHorizontal, Trash2, Activity, Wrench, ChevronDown, Music, Radar, LayoutTemplate } from 'lucide-react'
+import { Search, SquarePen, MoreHorizontal, Trash2, Activity, Wrench, ChevronDown, ChevronUp, Music, Radar, LayoutTemplate } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { toast } from 'sonner'
 import {
@@ -27,6 +27,8 @@ import {
 import { SearchDialog } from './search-dialog'
 import { APIService } from '../services/api.service'
 
+const INITIAL_CHAT_COUNT = 5
+
 export function AppSidebar({ onNewChat }) {
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   const [chatHistory, setChatHistory] = useState([])
@@ -34,6 +36,7 @@ export function AppSidebar({ onNewChat }) {
   const [deleteTargetId, setDeleteTargetId] = useState(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isToolsOpen, setIsToolsOpen] = useState(false)
+  const [isChatsExpanded, setIsChatsExpanded] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -154,8 +157,12 @@ export function AppSidebar({ onNewChat }) {
         <SidebarGroup>
           <SidebarGroupLabel>Your chats</SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu>
-              {chatHistory.map((item) => {
+            {(() => {
+              const visibleChats = chatHistory.slice(0, INITIAL_CHAT_COUNT)
+              const overflowChats = chatHistory.slice(INITIAL_CHAT_COUNT)
+              const hasOverflow = overflowChats.length > 0
+
+              const renderChatItem = (item) => {
                 const chatId = item.id
                 return (
                   <SidebarMenuItem key={chatId || Math.random()}>
@@ -191,8 +198,50 @@ export function AppSidebar({ onNewChat }) {
                     </div>
                   </SidebarMenuItem>
                 )
-              })}
-            </SidebarMenu>
+              }
+
+              return (
+                <>
+                  <SidebarMenu>{visibleChats.map(renderChatItem)}</SidebarMenu>
+
+                  {hasOverflow && (
+                    <>
+                      <div
+                        className={`grid transition-[grid-template-rows,opacity] duration-300 ease-in-out ${
+                          isChatsExpanded
+                            ? 'grid-rows-[1fr] opacity-100'
+                            : 'grid-rows-[0fr] opacity-0'
+                        }`}
+                        aria-hidden={!isChatsExpanded}
+                      >
+                        <div className="overflow-hidden min-h-0">
+                          <SidebarMenu>{overflowChats.map(renderChatItem)}</SidebarMenu>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsChatsExpanded((prev) => !prev)}
+                        aria-expanded={isChatsExpanded}
+                        className="mt-1 flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+                      >
+                        {isChatsExpanded ? (
+                          <>
+                            <ChevronUp className="h-3.5 w-3.5 transition-transform duration-300" />
+                            Show less
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown className="h-3.5 w-3.5 transition-transform duration-300" />
+                            See more ({overflowChats.length})
+                          </>
+                        )}
+                      </button>
+                    </>
+                  )}
+                </>
+              )
+            })()}
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
