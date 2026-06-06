@@ -30,7 +30,6 @@ server {
 
     # Internal auth subrequest -- nginx calls this before proxying to scrapers
     location = /_auth {
-        client_max_body_size 250M;
         internal;
         proxy_pass http://187.77.135.46:8080/auth/validate-cookie;
         proxy_pass_request_body off;
@@ -116,9 +115,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        client_max_body_size 250M;
-        proxy_read_timeout 10800s;
-        proxy_send_timeout 10800s;
+        proxy_read_timeout 300s;
 
         sub_filter_once off;
         sub_filter_types text/html application/javascript text/javascript;

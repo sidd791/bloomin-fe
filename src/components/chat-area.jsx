@@ -1,8 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
-import { Plus, X, FileText, ArrowUp, Square, Scale, Brain, Clock } from 'lucide-react'
+import { Plus, ArrowUp, Square, Scale, Brain, Clock, ChevronDown, ChevronUp } from 'lucide-react'
 import { RotatingHeadlines } from './rotating-headlines'
+import { AttachmentChip, AttachmentBadge } from './attachment-chip'
 import { APIService } from '../services/api.service'
+import { useFileUpload } from '../hooks/use-file-upload'
+import { ACCEPT_STRING, UPLOAD_MAX_FILES, UPLOAD_STATUS } from '../lib/file-upload'
 import { toast } from 'sonner'
 
 const CHAT_MODES = [
@@ -32,19 +35,55 @@ function loadMessages(sessionId) {
 
 function saveMessages(sessionId, messages) {
   if (!sessionId) return
-  const serializable = messages.map(({ id, content, isUser, timestamp, attachedFile, responseTime }) => ({
-    id, content, isUser, timestamp, attachedFile, responseTime,
+  const serializable = messages.map(({ id, content, isUser, timestamp, attachments, responseTime, clientMessageId, meta }) => ({
+    id, content, isUser, timestamp, attachments, responseTime, clientMessageId, meta,
   }))
   localStorage.setItem(`messages_${sessionId}`, JSON.stringify(serializable))
+}
+
+const TRUNCATE_LIMIT = 200
+
+function ExpandableUserMessage({ content, renderMessageContent }) {
+  const [expanded, setExpanded] = useState(false)
+  const isTruncatable = content.length > TRUNCATE_LIMIT
+
+  const displayText = !isTruncatable || expanded
+    ? content
+    : content.slice(0, TRUNCATE_LIMIT) + '...'
+
+  return (
+    <div
+      className={`rounded-2xl px-4 sm:px-5 py-3 text-sm whitespace-pre-wrap break-words bg-pink-500 text-white shadow-md min-w-0 overflow-hidden ${isTruncatable ? 'cursor-pointer select-none' : ''}`}
+      onClick={isTruncatable ? () => setExpanded((prev) => !prev) : undefined}
+    >
+      {renderMessageContent(displayText)}
+      {isTruncatable && (
+        <span className="inline-flex items-center gap-1 ml-1 text-white/70 text-xs align-middle">
+          {expanded ? <ChevronUp className="h-3.5 w-3.5 inline" /> : <ChevronDown className="h-3.5 w-3.5 inline" />}
+        </span>
+      )}
+    </div>
+  )
 }
 
 export function ChatArea({ conversationId }) {
   const [inputValue, setInputValue] = useState('')
   const [messages, setMessages] = useState([])
   const [isTyping, setIsTyping] = useState(false)
-  const [uploadedFile, setUploadedFile] = useState(null)
   const [isStreaming, setIsStreaming] = useState(false)
   const [chatMode, setChatMode] = useState('thinking')
+  const [isDragOver, setIsDragOver] = useState(false)
+
+  const {
+    attachments,
+    addFiles,
+    removeAttachment,
+    retryUpload,
+    clearAttachments,
+    hasUploading,
+    getAttachmentsPayload,
+    canAttachMore,
+  } = useFileUpload()
 
   const sessionIdRef = useRef(
     conversationId && !String(conversationId).startsWith('new-') ? conversationId : null,
@@ -55,6 +94,8 @@ export function ChatArea({ conversationId }) {
   const revealedLenRef = useRef(0)
   const revealTimerRef = useRef(null)
   const abortControllerRef = useRef(null)
+  const fileInputRef = useRef(null)
+  const dropZoneRef = useRef(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -68,6 +109,7 @@ export function ChatArea({ conversationId }) {
     if (!conversationId || String(conversationId).startsWith('new-')) {
       setMessages([])
       sessionIdRef.current = null
+      clearAttachments()
       return
     }
     sessionIdRef.current = conversationId
@@ -75,19 +117,87 @@ export function ChatArea({ conversationId }) {
     setMessages(
       stored.map((msg) => ({ ...msg, isTypingStream: false })),
     )
+    loadSessionAttachments(conversationId, stored)
   }, [conversationId])
 
-  const handleFileUpload = async (event) => {
-    const file = event.target.files[0]
-    event.target.value = ''
-    if (file && file.type === 'application/pdf') {
-      setUploadedFile(file)
+  const loadSessionAttachments = async (sessionId, storedMessages) => {
+    try {
+      const serverAttachments = await APIService.getSessionAttachments(sessionId)
+      if (!serverAttachments?.length) return
+
+      const attachmentMap = new Map()
+      for (const att of serverAttachments) {
+        const key = att.client_message_id
+        if (!attachmentMap.has(key)) attachmentMap.set(key, [])
+        attachmentMap.get(key).push(att)
+      }
+
+      setMessages((prev) =>
+        prev.map((msg) => {
+          if (msg.clientMessageId && attachmentMap.has(msg.clientMessageId)) {
+            return { ...msg, attachments: attachmentMap.get(msg.clientMessageId) }
+          }
+          return msg
+        }),
+      )
+    } catch {
+      // Attachments are decorative; don't block the chat
     }
   }
 
-  const removeAttachment = () => {
-    setUploadedFile(null)
+  const handleFileSelect = useCallback((files) => {
+    if (!files?.length) return
+    const results = addFiles(files)
+    for (const r of results) {
+      if (r.error && !r.attachment) {
+        toast.error(r.error)
+      }
+    }
+  }, [addFiles])
+
+  const handleFileInputChange = (event) => {
+    handleFileSelect(event.target.files)
+    event.target.value = ''
   }
+
+  const handleDragOver = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (dropZoneRef.current && !dropZoneRef.current.contains(e.relatedTarget)) {
+      setIsDragOver(false)
+    }
+  }, [])
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+    if (e.dataTransfer?.files?.length) {
+      handleFileSelect(e.dataTransfer.files)
+    }
+  }, [handleFileSelect])
+
+  const handlePaste = useCallback((e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const files = []
+    for (const item of items) {
+      if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) files.push(file)
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault()
+      handleFileSelect(files)
+    }
+  }, [handleFileSelect])
 
   useEffect(() => {
     return () => stopReveal()
@@ -125,7 +235,7 @@ export function ChatArea({ conversationId }) {
     }
   }
 
-  const callChatAPI = async (message, sessionId, mode) => {
+  const callChatAPI = async (message, sessionId, mode, { clientMessageId, attachments: attachmentsPayload } = {}) => {
     setIsTyping(true)
     setIsStreaming(true)
     const assistantMessageId = Date.now() + 1
@@ -135,6 +245,7 @@ export function ChatArea({ conversationId }) {
 
     const controller = new AbortController()
     abortControllerRef.current = controller
+    let streamMeta = null
 
     try {
       setMessages((prev) => [
@@ -158,6 +269,11 @@ export function ChatArea({ conversationId }) {
         },
         controller.signal,
         mode,
+        {
+          clientMessageId,
+          attachments: attachmentsPayload,
+          onMeta: (meta) => { streamMeta = meta },
+        },
       )
 
       const elapsed = ((performance.now() - startTime) / 1000).toFixed(1)
@@ -175,7 +291,7 @@ export function ChatArea({ conversationId }) {
       setMessages((prev) => {
         const updated = prev.map((msg) =>
           msg.id === assistantMessageId
-            ? { ...msg, content: targetTextRef.current, isTypingStream: false, responseTime: elapsed }
+            ? { ...msg, content: targetTextRef.current, isTypingStream: false, responseTime: elapsed, meta: streamMeta || undefined }
             : msg,
         )
         saveMessages(sessionId, updated)
@@ -218,61 +334,80 @@ export function ChatArea({ conversationId }) {
   const handleSubmit = async (e) => {
     e.preventDefault()
 
-    let text = inputValue.trim()
-    const activeFile = uploadedFile
-    let apiText = text
-
-    if (activeFile) {
-      apiText = `[Attached File: ${activeFile.name}] ${apiText}`.trim()
-      setUploadedFile(null)
+    if (hasUploading) {
+      toast.info('Please wait — files are still uploading...')
+      return
     }
 
-    if (text || activeFile) {
-      const userMessage = {
-        id: Date.now(),
-        content: text,
-        isUser: true,
-        timestamp: new Date().toISOString(),
-        isTypingStream: false,
-        attachedFile: activeFile ? { name: activeFile.name } : null,
+    const text = inputValue.trim()
+    const attachmentsPayload = getAttachmentsPayload()
+    const hasAttachments = attachmentsPayload.length > 0
+    const hasText = text.length > 0
+
+    if (!hasText && !hasAttachments) return
+
+    const clientMessageId = hasAttachments ? crypto.randomUUID() : null
+
+    const messageAttachments = hasAttachments
+      ? attachments
+          .filter((a) => a.status === UPLOAD_STATUS.READY)
+          .map((a) => ({
+            file_id: a.fileId,
+            filename: a.filename,
+            mime_type: a.mimeType,
+            preview_url: a.previewUrl,
+            localPreview: a.localPreview,
+          }))
+      : null
+
+    const userMessage = {
+      id: Date.now(),
+      content: text,
+      isUser: true,
+      timestamp: new Date().toISOString(),
+      isTypingStream: false,
+      attachments: messageAttachments,
+      clientMessageId,
+    }
+
+    setMessages((prev) => [...prev, userMessage])
+    setInputValue('')
+    clearAttachments()
+    if (textareaRef.current) {
+      textareaRef.current.style.height = '56px'
+    }
+
+    let sessionId = sessionIdRef.current
+    let isNewSession = false
+
+    if (!sessionId) {
+      try {
+        const label = text.length > 40 ? text.substring(0, 40) + '...' : (text || 'File analysis')
+        const result = await APIService.createSession(label)
+        sessionId = result?.id
+        sessionIdRef.current = sessionId
+        isNewSession = true
+        saveMessages(sessionId, [userMessage])
+      } catch {
+        toast.error('Failed to create session. Please try again.')
+        return
       }
+    }
 
-      setMessages((prev) => [...prev, userMessage])
-      setInputValue('')
-      if (textareaRef.current) {
-        textareaRef.current.style.height = '56px'
-      }
+    const apiText = text || (hasAttachments ? `Please analyze the attached file(s).` : '')
 
-      let sessionId = sessionIdRef.current
-      let isNewSession = false
+    await callChatAPI(apiText, sessionId, chatMode, {
+      clientMessageId,
+      attachments: attachmentsPayload,
+    })
 
-      if (!sessionId) {
-        try {
-          const label = text.length > 40 ? text.substring(0, 40) + '...' : text
-          const result = await APIService.createSession(label)
-          sessionId = result?.id
-          sessionIdRef.current = sessionId
-          isNewSession = true
-
-          saveMessages(sessionId, [userMessage])
-        } catch {
-          toast.error('Failed to create session. Please try again.')
-          return
-        }
-      }
-
-      await callChatAPI(
-        apiText || (activeFile ? `Please analyze this document: ${activeFile.name}` : ''),
-        sessionId,
-        chatMode,
-      )
-
-      if (isNewSession) {
-        window.history.replaceState({}, '', `/chat/${sessionId}`)
-        window.dispatchEvent(new Event('chat-created'))
-      }
+    if (isNewSession) {
+      window.history.replaceState({}, '', `/chat/${sessionId}`)
+      window.dispatchEvent(new Event('chat-created'))
     }
   }
+
+  const canSend = (inputValue.trim() || attachments.some((a) => a.status === UPLOAD_STATUS.READY)) && !hasUploading
 
   const renderModeSelector = () => (
     <div className="flex items-center justify-center mb-2">
@@ -297,53 +432,75 @@ export function ChatArea({ conversationId }) {
     </div>
   )
 
+  const renderAttachmentChips = () => {
+    if (attachments.length === 0) return null
+    return (
+      <div className="px-4 pt-4 pb-2 flex flex-wrap gap-2">
+        {attachments.map((attachment) => (
+          <AttachmentChip
+            key={attachment.localId}
+            attachment={attachment}
+            onRemove={removeAttachment}
+            onRetry={retryUpload}
+          />
+        ))}
+      </div>
+    )
+  }
+
   const renderInputForm = () => (
     <form onSubmit={handleSubmit} className="w-full">
       {renderModeSelector()}
-      <div className="flex flex-col bg-muted/30 border-2 border-pink-500 rounded-[28px] overflow-hidden focus-within:border-pink-600 focus-within:ring-2 focus-within:ring-pink-500/20 transition-all shadow-sm">
-        {uploadedFile && (
-          <div className="px-4 pt-4 pb-2">
-            <div className="relative flex items-center gap-3 bg-background border rounded-xl p-2 pr-6 w-max max-w-[240px] shadow-sm group">
-              <div className="h-10 w-10 bg-red-500 rounded-lg flex items-center justify-center shrink-0">
-                <FileText className="h-5 w-5 text-white" />
-              </div>
-              <div className="flex flex-col overflow-hidden text-left">
-                <span className="text-sm font-medium truncate text-foreground">
-                  {uploadedFile.name}
-                </span>
-                <span className="text-xs text-muted-foreground uppercase font-semibold">
-                  PDF
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={removeAttachment}
-                className="absolute -top-2 -right-2 bg-muted text-foreground border rounded-full p-1 hover:bg-foreground hover:text-background transition-colors"
-                title="Remove attachment"
-              >
-                <X className="h-3 w-3" />
-              </button>
+      <div
+        ref={dropZoneRef}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`flex flex-col bg-muted/30 border-2 rounded-[28px] overflow-hidden transition-all shadow-sm ${
+          isDragOver
+            ? 'border-pink-400 bg-pink-500/5 ring-2 ring-pink-500/20'
+            : 'border-pink-500 focus-within:border-pink-600 focus-within:ring-2 focus-within:ring-pink-500/20'
+        }`}
+      >
+        {isDragOver && (
+          <div className="px-4 pt-4 pb-2 flex items-center justify-center">
+            <div className="text-sm text-pink-500 font-medium py-3">
+              Drop files here to attach
             </div>
           </div>
         )}
 
+        {!isDragOver && renderAttachmentChips()}
+
         <div className="relative flex items-end min-h-[56px]">
           <div className="absolute left-3 bottom-0 flex items-center gap-1 pb-2">
-            <label className="cursor-pointer p-2 hover:bg-pink-500/10 rounded-full transition-colors flex items-center justify-center">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPT_STRING}
+              onChange={handleFileInputChange}
+              className="hidden"
+              multiple
+            />
+            <button
+              type="button"
+              onClick={() => canAttachMore && fileInputRef.current?.click()}
+              className={`p-2 rounded-full transition-colors flex items-center justify-center ${
+                canAttachMore
+                  ? 'hover:bg-pink-500/10 cursor-pointer'
+                  : 'opacity-40 cursor-not-allowed'
+              }`}
+              title={canAttachMore ? 'Attach files' : `Maximum ${UPLOAD_MAX_FILES} files`}
+            >
               <Plus className="h-5 w-5 text-pink-500 hover:text-pink-600 transition" />
-              <input
-                type="file"
-                accept="application/pdf"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-            </label>
+            </button>
           </div>
 
           <textarea
             ref={textareaRef}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
+            onPaste={handlePaste}
             placeholder="Ask anything"
             rows={1}
             className="w-full bg-transparent border-none focus:outline-none pl-16 pr-14 sm:pr-24 py-4 text-base resize-none"
@@ -372,19 +529,26 @@ export function ChatArea({ conversationId }) {
                 <Square className="h-4 w-4" />
               </Button>
             ) : (
-              <Button
-                type="submit"
-                variant="ghost"
-                size="icon"
-                className={`h-9 w-9 rounded-full transition-colors ${
-                  inputValue.trim() || uploadedFile
-                    ? 'bg-pink-500 text-white hover:bg-pink-600'
-                    : 'bg-pink-500/10 text-pink-500 hover:bg-pink-500/20'
-                }`}
-                disabled={!inputValue.trim() && !uploadedFile}
-              >
-                <ArrowUp className="h-5 w-5" />
-              </Button>
+              <div className="relative">
+                {hasUploading && (
+                  <div className="absolute -top-8 right-0 whitespace-nowrap text-xs text-pink-500 bg-background border rounded-md px-2 py-1 shadow-sm">
+                    Files still processing...
+                  </div>
+                )}
+                <Button
+                  type="submit"
+                  variant="ghost"
+                  size="icon"
+                  className={`h-9 w-9 rounded-full transition-colors ${
+                    canSend
+                      ? 'bg-pink-500 text-white hover:bg-pink-600'
+                      : 'bg-pink-500/10 text-pink-500 hover:bg-pink-500/20'
+                  }`}
+                  disabled={!canSend}
+                >
+                  <ArrowUp className="h-5 w-5" />
+                </Button>
+              </div>
             )}
           </div>
         </div>
@@ -408,6 +572,18 @@ export function ChatArea({ conversationId }) {
     })
   }
 
+  const renderMessageAttachments = (msg) => {
+    const atts = msg.attachments
+    if (!atts?.length) return null
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        {atts.map((att, i) => (
+          <AttachmentBadge key={att.file_id || i} attachment={att} />
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col flex-1 overflow-hidden bg-background relative">
       {messages.length === 0 ? (
@@ -421,7 +597,7 @@ export function ChatArea({ conversationId }) {
         <>
           <div className="flex-1 overflow-y-auto px-2 py-3 sm:p-4 w-full flex flex-col items-center [scrollbar-gutter:stable]">
             <div className="w-full max-w-4xl space-y-4 sm:space-y-6 pb-4 sm:pb-6 mt-2 sm:mt-4">
-              {messages.filter((msg) => msg.content?.trim()).map((msg) => (
+              {messages.filter((msg) => msg.content?.trim() || msg.attachments?.length).map((msg) => (
                 <div
                   key={msg.id}
                   className={`flex w-full min-w-0 ${
@@ -430,29 +606,12 @@ export function ChatArea({ conversationId }) {
                 >
                   {msg.isUser ? (
                     <div className="flex flex-col items-end gap-2 max-w-[92%] sm:max-w-[80%] min-w-0">
-                      {msg.attachedFile && (
-                        <div className="flex items-center gap-3 bg-muted/10 border rounded-xl p-2 pr-6 shadow-sm w-max max-w-full">
-                          <div className="h-10 w-10 bg-red-500 rounded-lg flex items-center justify-center shrink-0">
-                            <FileText className="h-5 w-5 text-white" />
-                          </div>
-                          <div className="flex flex-col overflow-hidden text-left">
-                            <span className="text-sm font-medium truncate text-foreground">
-                              {msg.attachedFile.name}
-                            </span>
-                            <span className="text-xs text-muted-foreground uppercase font-semibold">
-                              PDF
-                            </span>
-                          </div>
-                        </div>
-                      )}
+                      {renderMessageAttachments(msg)}
                       {msg.content && (
-                        <div className="rounded-2xl px-4 sm:px-5 py-3 text-sm whitespace-pre-wrap break-words bg-pink-500 text-white shadow-md min-w-0 overflow-hidden">
-                          {renderMessageContent(
-                            msg.content.length > 200
-                              ? msg.content.slice(0, 200) + '...'
-                              : msg.content,
-                          )}
-                        </div>
+                        <ExpandableUserMessage
+                          content={msg.content}
+                          renderMessageContent={renderMessageContent}
+                        />
                       )}
                     </div>
                   ) : (
@@ -463,10 +622,24 @@ export function ChatArea({ conversationId }) {
                           <span className="animate-pulse opacity-70 ml-[2px]">|</span>
                         )}
                       </div>
-                      {msg.responseTime && (
-                        <div className="flex items-center gap-1 px-2 text-[11px] text-muted-foreground/60">
-                          <Clock className="h-3 w-3" />
-                          <span>{msg.responseTime}s</span>
+                      {(msg.responseTime || msg.meta) && (
+                        <div className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground/60 flex-wrap">
+                          {msg.responseTime && (
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-3 w-3" />
+                              {msg.responseTime}s
+                            </span>
+                          )}
+                          {msg.meta?.usage?.total_tokens != null && (
+                            <span className="flex items-center gap-1">
+                              {msg.meta.usage.total_tokens} tokens
+                            </span>
+                          )}
+                          {msg.meta?.usage?.cost_usd != null && (
+                            <span className="flex items-center gap-1 text-pink-500/70 font-medium">
+                              ${msg.meta.usage.cost_usd.toFixed(4)}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
