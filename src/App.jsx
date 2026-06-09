@@ -6,6 +6,11 @@ import { Header } from './components/header'
 import { ChatArea } from './components/chat-area'
 import { ServerHealth } from './components/server-health'
 import { AuthPage } from './pages/auth-page'
+import { CostDashboardPage } from './pages/cost/cost-dashboard'
+import { CostModelsPage } from './pages/cost/cost-models'
+import { CostUserPage } from './pages/cost/cost-user'
+import { CostTurnPage } from './pages/cost/cost-turn'
+import { BillingDashboardPage } from './pages/billing/billing-dashboard'
 import { SidebarProvider, SidebarInset } from '@/components/ui/sidebar'
 import { Toaster } from '@/components/ui/sonner'
 
@@ -92,6 +97,11 @@ const App = () => {
           <Route path="/" element={<ProtectedRoute><ChatLayout /></ProtectedRoute>} />
           <Route path="/chat/:chatId" element={<ProtectedRoute><ChatLayout /></ProtectedRoute>} />
           <Route path="/servers" element={<ProtectedRoute><ServersLayout /></ProtectedRoute>} />
+          <Route path="/cost" element={<ProtectedRoute><CostDashboardPage /></ProtectedRoute>} />
+          <Route path="/cost/models" element={<ProtectedRoute><CostModelsPage /></ProtectedRoute>} />
+          <Route path="/cost/users/:userId" element={<ProtectedRoute><CostUserPage /></ProtectedRoute>} />
+          <Route path="/cost/turns/:turnId" element={<ProtectedRoute><CostTurnPage /></ProtectedRoute>} />
+          <Route path="/billing" element={<ProtectedRoute><BillingDashboardPage /></ProtectedRoute>} />
         </Routes>
         <Toaster className="chat-toaster" position="top-center" expand={false} closeButton />
       </AuthProvider>

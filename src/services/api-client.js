@@ -77,6 +77,11 @@ async function streamPost(path, body, onChunk, signal, { onMeta } = {}) {
   let buffer = '';
   let fullContent = '';
   let meta = null;
+  // Any explicit error reported by the backend over the SSE stream. We
+  // surface it to the caller (in addition to any partial content) so the UI
+  // can show something actionable instead of an empty bubble.
+  let streamError = null;
+  let lastEventName = null;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -87,16 +92,30 @@ async function streamPost(path, body, onChunk, signal, { onMeta } = {}) {
     buffer = lines.pop() || '';
 
     for (const line of lines) {
+      if (line.startsWith('event:')) {
+        lastEventName = line.slice(6).trim();
+        continue;
+      }
       if (line.startsWith('data: ')) {
         const data = line.slice(6).trim();
         if (data === '[DONE]') {
           if (meta && onMeta) onMeta(meta);
-          return { content: fullContent, meta };
+          return { content: fullContent, meta, error: streamError };
         }
         try {
           const parsed = JSON.parse(data);
           if (parsed.type === 'meta') {
             meta = parsed;
+            lastEventName = null;
+            continue;
+          }
+          if (lastEventName === 'error' || parsed.type === 'error' || parsed.error) {
+            streamError =
+              parsed.error ||
+              parsed.message ||
+              parsed.detail ||
+              'The server reported an error mid-stream.';
+            lastEventName = null;
             continue;
           }
           const chunk = parsed.choices?.[0]?.delta?.content;
@@ -104,13 +123,14 @@ async function streamPost(path, body, onChunk, signal, { onMeta } = {}) {
             fullContent += chunk;
             onChunk(fullContent);
           }
+          lastEventName = null;
         } catch { continue; }
       }
     }
   }
 
   if (meta && onMeta) onMeta(meta);
-  return { content: fullContent, meta };
+  return { content: fullContent, meta, error: streamError };
 }
 
 async function uploadFile(path, file, onProgress) {
