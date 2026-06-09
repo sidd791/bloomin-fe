@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
-import { Plus, ArrowUp, Square, Scale, Brain, Clock, ChevronDown, ChevronUp } from 'lucide-react'
+import { Plus, ArrowUp, Square, Scale, Brain, Zap, Clock, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react'
 import { RotatingHeadlines } from './rotating-headlines'
 import { AttachmentChip, AttachmentBadge } from './attachment-chip'
 import { APIService } from '../services/api.service'
@@ -9,6 +9,12 @@ import { ACCEPT_STRING, UPLOAD_MAX_FILES, UPLOAD_STATUS } from '../lib/file-uplo
 import { toast } from 'sonner'
 
 const CHAT_MODES = [
+  {
+    value: 'auto',
+    label: 'Auto',
+    icon: Zap,
+    tooltip: 'Smart mode — automatically picks the best model for each message.',
+  },
   {
     value: 'balanced',
     label: 'Balanced',
@@ -42,6 +48,26 @@ function saveMessages(sessionId, messages) {
 }
 
 const TRUNCATE_LIMIT = 200
+const STREAM_SAVE_THROTTLE_MS = 800
+
+function HistoryUnavailableCard() {
+  return (
+    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-5 py-4 text-center max-w-2xl mx-auto">
+      <div className="flex justify-center mb-2">
+        <AlertCircle className="h-5 w-5 text-amber-500" />
+      </div>
+      <h3 className="text-sm font-medium text-foreground mb-1">
+        Message history isn't on this device
+      </h3>
+      <p className="text-xs text-muted-foreground leading-relaxed max-w-md mx-auto">
+        This conversation was started in a different browser, or its earlier
+        messages were interrupted before they could be saved. The original
+        text isn't available here, but you can keep chatting — new turns
+        will be saved on this browser.
+      </p>
+    </div>
+  )
+}
 
 function ExpandableUserMessage({ content, renderMessageContent }) {
   const [expanded, setExpanded] = useState(false)
@@ -71,8 +97,9 @@ export function ChatArea({ conversationId }) {
   const [messages, setMessages] = useState([])
   const [isTyping, setIsTyping] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
-  const [chatMode, setChatMode] = useState('thinking')
+  const [chatMode, setChatMode] = useState('auto')
   const [isDragOver, setIsDragOver] = useState(false)
+  const [historyMissing, setHistoryMissing] = useState(false)
 
   const {
     attachments,
@@ -96,6 +123,13 @@ export function ChatArea({ conversationId }) {
   const abortControllerRef = useRef(null)
   const fileInputRef = useRef(null)
   const dropZoneRef = useRef(null)
+  // Session id currently being streamed into (used to persist partial replies
+  // under the right key even after navigation).
+  const streamingSessionIdRef = useRef(null)
+  // Mirror of `messages` for synchronous access inside cleanup paths.
+  const messagesRef = useRef(messages)
+  // Timestamp of the last streaming-snapshot save, for throttling.
+  const lastStreamSaveAtRef = useRef(0)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -103,12 +137,56 @@ export function ChatArea({ conversationId }) {
 
   useEffect(() => {
     scrollToBottom()
+    messagesRef.current = messages
   }, [messages])
 
+  // Throttled snapshot save during streaming. Captures whatever has been
+  // revealed so far so partial replies survive navigation/refresh.
+  const persistStreamingSnapshot = (snapshot, force = false) => {
+    const sid = streamingSessionIdRef.current
+    if (!sid) return
+    const now = Date.now()
+    if (!force && now - lastStreamSaveAtRef.current < STREAM_SAVE_THROTTLE_MS) return
+    lastStreamSaveAtRef.current = now
+    try {
+      saveMessages(sid, snapshot)
+    } catch {
+      // localStorage quota / serialization errors are non-fatal
+    }
+  }
+
+  // Force-flush the current partial reply under the streaming session id and
+  // tear down any in-flight stream. Used when the user navigates between
+  // chats or the component unmounts.
+  const flushAndCleanupStream = () => {
+    if (streamingSessionIdRef.current && messagesRef.current?.length) {
+      try {
+        saveMessages(streamingSessionIdRef.current, messagesRef.current)
+      } catch {
+        // ignore
+      }
+      streamingSessionIdRef.current = null
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    stopReveal()
+    setIsStreaming(false)
+    setIsTyping(false)
+  }
+
   useEffect(() => {
+    // Switching to any chat (real or new-) — flush any partial assistant reply
+    // from the previous chat under its own session id before we tear down state.
+    if (sessionIdRef.current !== conversationId) {
+      flushAndCleanupStream()
+    }
+
     if (!conversationId || String(conversationId).startsWith('new-')) {
       setMessages([])
       sessionIdRef.current = null
+      setHistoryMissing(false)
       clearAttachments()
       return
     }
@@ -117,7 +195,9 @@ export function ChatArea({ conversationId }) {
     setMessages(
       stored.map((msg) => ({ ...msg, isTypingStream: false })),
     )
+    setHistoryMissing(stored.length === 0)
     loadSessionAttachments(conversationId, stored)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId])
 
   const loadSessionAttachments = async (sessionId, storedMessages) => {
@@ -200,7 +280,20 @@ export function ChatArea({ conversationId }) {
   }, [handleFileSelect])
 
   useEffect(() => {
-    return () => stopReveal()
+    return () => {
+      // Component unmount: persist whatever streamed in before we vanish.
+      if (streamingSessionIdRef.current && messagesRef.current?.length) {
+        try {
+          saveMessages(streamingSessionIdRef.current, messagesRef.current)
+        } catch {
+          // ignore
+        }
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+      stopReveal()
+    }
   }, [])
 
   const handleStop = () => {
@@ -208,6 +301,15 @@ export function ChatArea({ conversationId }) {
     stopReveal()
     setIsStreaming(false)
     setIsTyping(false)
+    // Save whatever streamed in before the user pressed stop.
+    if (streamingSessionIdRef.current && messagesRef.current?.length) {
+      try {
+        saveMessages(streamingSessionIdRef.current, messagesRef.current)
+      } catch {
+        // ignore
+      }
+      streamingSessionIdRef.current = null
+    }
   }
 
   const startReveal = (msgId) => {
@@ -219,11 +321,13 @@ export function ChatArea({ conversationId }) {
         const speed = remaining > 300 ? 3 : remaining > 100 ? 2 : 1
         revealedLenRef.current = Math.min(revealedLenRef.current + speed, target.length)
         const revealed = target.slice(0, revealedLenRef.current)
-        setMessages((prev) =>
-          prev.map((msg) =>
+        setMessages((prev) => {
+          const updated = prev.map((msg) =>
             msg.id === msgId ? { ...msg, content: revealed } : msg,
-          ),
-        )
+          )
+          persistStreamingSnapshot(updated)
+          return updated
+        })
       }
     }, 30)
   }
@@ -242,6 +346,8 @@ export function ChatArea({ conversationId }) {
     const startTime = performance.now()
     targetTextRef.current = ''
     revealedLenRef.current = 0
+    streamingSessionIdRef.current = sessionId
+    lastStreamSaveAtRef.current = 0
 
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -259,7 +365,7 @@ export function ChatArea({ conversationId }) {
         },
       ])
 
-      await APIService.sendChatMessage(
+      const streamResult = await APIService.sendChatMessage(
         sessionId,
         message,
         (fullText) => {
@@ -288,15 +394,58 @@ export function ChatArea({ conversationId }) {
       })
 
       stopReveal()
-      setMessages((prev) => {
-        const updated = prev.map((msg) =>
-          msg.id === assistantMessageId
-            ? { ...msg, content: targetTextRef.current, isTypingStream: false, responseTime: elapsed, meta: streamMeta || undefined }
-            : msg,
-        )
-        saveMessages(sessionId, updated)
-        return updated
-      })
+      setIsTyping(false)
+
+      // Detect "stream succeeded but produced nothing the user can see":
+      // an HTTP 200 from /messages that emits no `delta.content` chunks, or
+      // an explicit error event in the SSE body. Without this guard the
+      // empty assistant placeholder gets filtered out of the render and the
+      // UI looks frozen / unresponsive.
+      const finalText = (targetTextRef.current || '').trim()
+      const streamError = streamResult?.error
+      const isEmpty = !finalText && !streamError
+
+      if (streamError || isEmpty) {
+        const errorBody = streamError
+          ? `The model didn't finish the response.\n\n**Server said:** ${streamError}\n\nPlease try again — if it keeps failing, the prompt may be too long or the upstream provider is having issues.`
+          : `The model returned an empty response.\n\nThis usually means the prompt was too long for the selected model's context window, an upstream provider hit a rate limit, or a tool call timed out on the backend.\n\nTry shortening your message, switching modes, or sending again.`
+
+        setMessages((prev) => {
+          const updated = prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? {
+                  ...msg,
+                  content: errorBody,
+                  isTypingStream: false,
+                  responseTime: elapsed,
+                  meta: streamMeta || undefined,
+                  isError: true,
+                }
+              : msg,
+          )
+          saveMessages(sessionId, updated)
+          return updated
+        })
+
+        if (typeof console !== 'undefined') {
+          console.warn('[chat] empty/aborted stream from backend', {
+            sessionId,
+            streamError,
+            elapsedSec: elapsed,
+            meta: streamMeta,
+          })
+        }
+      } else {
+        setMessages((prev) => {
+          const updated = prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, content: targetTextRef.current, isTypingStream: false, responseTime: elapsed, meta: streamMeta || undefined }
+              : msg,
+          )
+          saveMessages(sessionId, updated)
+          return updated
+        })
+      }
     } catch (error) {
       if (error.name === 'AbortError') return
 
@@ -328,6 +477,7 @@ export function ChatArea({ conversationId }) {
       setIsTyping(false)
       setIsStreaming(false)
       abortControllerRef.current = null
+      streamingSessionIdRef.current = null
     }
   }
 
@@ -371,6 +521,7 @@ export function ChatArea({ conversationId }) {
     }
 
     setMessages((prev) => [...prev, userMessage])
+    setHistoryMissing(false)
     setInputValue('')
     clearAttachments()
     if (textareaRef.current) {
@@ -589,7 +740,7 @@ export function ChatArea({ conversationId }) {
       {messages.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center p-4">
           <div className="w-full max-w-3xl flex flex-col items-center gap-8">
-            <RotatingHeadlines />
+            {historyMissing ? <HistoryUnavailableCard /> : <RotatingHeadlines />}
             <div className="w-full">{renderInputForm()}</div>
           </div>
         </div>
@@ -624,6 +775,11 @@ export function ChatArea({ conversationId }) {
                       </div>
                       {(msg.responseTime || msg.meta) && (
                         <div className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground/60 flex-wrap">
+                          {msg.meta?.mode && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 font-medium">
+                              {msg.meta.mode === 'auto' ? 'Auto ⚡' : msg.meta.mode === 'thinking' ? 'Thinking' : msg.meta.mode === 'balanced' ? 'Balanced' : msg.meta.mode}
+                            </span>
+                          )}
                           {msg.responseTime && (
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />

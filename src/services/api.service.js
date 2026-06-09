@@ -1,9 +1,9 @@
 import { apiClient } from './api-client';
 
 function normalizeMode(mode) {
-  if (mode === 'balanced' || mode === 'thinking') return mode;
+  if (mode === 'auto' || mode === 'balanced' || mode === 'thinking') return mode;
   if (mode === 'fast') return 'balanced';
-  return 'thinking';
+  return 'auto';
 }
 
 export const APIService = {
@@ -25,7 +25,7 @@ export const APIService = {
     return await apiClient.delete(`/chat/sessions/${sessionId}`);
   },
 
-  sendChatMessage(sessionId, content, onDelta, signal, mode = 'thinking', { clientMessageId, attachments, onMeta } = {}) {
+  sendChatMessage(sessionId, content, onDelta, signal, mode = 'auto', { clientMessageId, attachments, onMeta } = {}) {
     const body = { content, stream: true, mode: normalizeMode(mode) };
     if (clientMessageId) body.client_message_id = clientMessageId;
     if (attachments?.length) body.attachments = attachments;

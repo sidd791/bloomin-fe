@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Search, SquarePen, MoreHorizontal, Trash2, Activity, Wrench, ChevronDown, ChevronUp, Music, Radar, LayoutTemplate } from 'lucide-react'
+import { Search, SquarePen, MoreHorizontal, Trash2, Activity, Wrench, ChevronDown, ChevronUp, Music, Radar, LayoutTemplate, DollarSign, Receipt, BarChart3 } from 'lucide-react'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { toast } from 'sonner'
 import {
@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/sidebar'
 import { SearchDialog } from './search-dialog'
 import { APIService } from '../services/api.service'
+import { useAuth } from '@/contexts/auth-context'
 
 const INITIAL_CHAT_COUNT = 5
 
@@ -36,9 +37,11 @@ export function AppSidebar({ onNewChat }) {
   const [deleteTargetId, setDeleteTargetId] = useState(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isToolsOpen, setIsToolsOpen] = useState(false)
+  const [isBillingOpen, setIsBillingOpen] = useState(false)
   const [isChatsExpanded, setIsChatsExpanded] = useState(false)
   const navigate = useNavigate()
   const location = useLocation()
+  const { user } = useAuth()
 
   const currentChatId = location.pathname.includes('/chat/')
     ? location.pathname.split('/chat/')[1]
@@ -290,10 +293,48 @@ export function AppSidebar({ onNewChat }) {
                 className="w-full justify-start text-muted-foreground hover:text-foreground"
                 asChild
               >
-                <a href="/landing-page/" target="_blank" rel="noopener noreferrer">
+                <a href="https://bloombrain-tools.io/api/auth/enter" target="_blank" rel="noopener noreferrer">
                   <LayoutTemplate className="mr-2 h-4 w-4" />
                   Landing Pages
                 </a>
+              </Button>
+            </div>
+          )}
+        </div>
+        <div className="flex flex-col">
+          <Button
+            variant="ghost"
+            className="w-full justify-start"
+            onClick={() => setIsBillingOpen((prev) => !prev)}
+            aria-expanded={isBillingOpen}
+          >
+            <Receipt className="mr-2 h-4 w-4" />
+            <span className="flex-1 text-left">Platform Billing</span>
+            <ChevronDown
+              className={`h-4 w-4 transition-transform ${isBillingOpen ? 'rotate-180' : ''}`}
+            />
+          </Button>
+          {isBillingOpen && (
+            <div className="mt-1 ml-2 flex flex-col gap-1">
+              {user?.is_admin && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full justify-start text-muted-foreground hover:text-foreground"
+                  onClick={() => navigate('/cost')}
+                >
+                  <DollarSign className="mr-2 h-4 w-4" />
+                  Per User Billing
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start text-muted-foreground hover:text-foreground"
+                onClick={() => navigate('/billing')}
+              >
+                <BarChart3 className="mr-2 h-4 w-4" />
+                Model Consumption
               </Button>
             </div>
           )}
