@@ -1,12 +1,34 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
-import { Plus, ArrowUp, Square, Scale, Brain, Zap, Clock, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react'
+import { Plus, ArrowUp, ArrowDown, Square, Scale, Brain, Zap, Clock, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react'
 import { RotatingHeadlines } from './rotating-headlines'
 import { AttachmentChip, AttachmentBadge } from './attachment-chip'
 import { APIService } from '../services/api.service'
+import { chatStreamManager, loadMessages, saveMessages } from '../services/chat-stream-manager'
 import { useFileUpload } from '../hooks/use-file-upload'
 import { ACCEPT_STRING, UPLOAD_MAX_FILES, UPLOAD_STATUS } from '../lib/file-upload'
 import { toast } from 'sonner'
+
+function normalizeServerMessages(serverMessages) {
+  return serverMessages.map((msg, idx) => ({
+    id: msg.id || `server-${idx}-${Date.now()}`,
+    content: msg.content || '',
+    isUser: msg.role === 'user',
+    timestamp: msg.created_at || new Date().toISOString(),
+    isTypingStream: false,
+    clientMessageId: msg.client_message_id || null,
+    attachments: msg.attachments?.length ? msg.attachments : null,
+    responseTime: msg.latency_ms ? (msg.latency_ms / 1000).toFixed(1) : null,
+    meta: msg.model || msg.mode || msg.total_cost != null ? {
+      mode: msg.mode || null,
+      usage: {
+        total_tokens: (msg.input_tokens || 0) + (msg.output_tokens || 0) || null,
+        cost_usd: msg.total_cost || null,
+      },
+    } : null,
+    isError: !!msg.error_kind,
+  }))
+}
 
 const CHAT_MODES = [
   {
@@ -29,26 +51,7 @@ const CHAT_MODES = [
   },
 ]
 
-function loadMessages(sessionId) {
-  if (!sessionId) return []
-  try {
-    const raw = localStorage.getItem(`messages_${sessionId}`)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
-}
-
-function saveMessages(sessionId, messages) {
-  if (!sessionId) return
-  const serializable = messages.map(({ id, content, isUser, timestamp, attachments, responseTime, clientMessageId, meta }) => ({
-    id, content, isUser, timestamp, attachments, responseTime, clientMessageId, meta,
-  }))
-  localStorage.setItem(`messages_${sessionId}`, JSON.stringify(serializable))
-}
-
 const TRUNCATE_LIMIT = 200
-const STREAM_SAVE_THROTTLE_MS = 800
 
 function HistoryUnavailableCard() {
   return (
@@ -117,88 +120,152 @@ export function ChatArea({ conversationId }) {
   )
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
-  const targetTextRef = useRef('')
-  const revealedLenRef = useRef(0)
-  const revealTimerRef = useRef(null)
-  const abortControllerRef = useRef(null)
   const fileInputRef = useRef(null)
   const dropZoneRef = useRef(null)
-  // Session id currently being streamed into (used to persist partial replies
-  // under the right key even after navigation).
-  const streamingSessionIdRef = useRef(null)
-  // Mirror of `messages` for synchronous access inside cleanup paths.
   const messagesRef = useRef(messages)
-  // Timestamp of the last streaming-snapshot save, for throttling.
-  const lastStreamSaveAtRef = useRef(0)
+  const scrollContainerRef = useRef(null)
+  const userScrolledUpRef = useRef(false)
+  const [showScrollButton, setShowScrollButton] = useState(false)
+  const wheelListenerRef = useRef(null)
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }
+  const scrollToBottom = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [])
 
-  useEffect(() => {
-    scrollToBottom()
-    messagesRef.current = messages
-  }, [messages])
-
-  // Throttled snapshot save during streaming. Captures whatever has been
-  // revealed so far so partial replies survive navigation/refresh.
-  const persistStreamingSnapshot = (snapshot, force = false) => {
-    const sid = streamingSessionIdRef.current
-    if (!sid) return
-    const now = Date.now()
-    if (!force && now - lastStreamSaveAtRef.current < STREAM_SAVE_THROTTLE_MS) return
-    lastStreamSaveAtRef.current = now
-    try {
-      saveMessages(sid, snapshot)
-    } catch {
-      // localStorage quota / serialization errors are non-fatal
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (distanceFromBottom <= 50) {
+      userScrolledUpRef.current = false
+      setShowScrollButton(false)
     }
-  }
+  }, [])
 
-  // Force-flush the current partial reply under the streaming session id and
-  // tear down any in-flight stream. Used when the user navigates between
-  // chats or the component unmounts.
-  const flushAndCleanupStream = () => {
-    if (streamingSessionIdRef.current && messagesRef.current?.length) {
-      try {
-        saveMessages(streamingSessionIdRef.current, messagesRef.current)
-      } catch {
-        // ignore
+  const scrollContainerCallbackRef = useCallback((node) => {
+    if (wheelListenerRef.current?.el) {
+      const prev = wheelListenerRef.current
+      prev.el.removeEventListener('wheel', prev.onWheel)
+      prev.el.removeEventListener('touchmove', prev.onTouch)
+      wheelListenerRef.current = null
+    }
+
+    scrollContainerRef.current = node
+    if (!node) return
+
+    const onWheel = (e) => {
+      if (e.deltaY < 0) {
+        userScrolledUpRef.current = true
+        setShowScrollButton(true)
       }
-      streamingSessionIdRef.current = null
     }
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-      abortControllerRef.current = null
-    }
-    stopReveal()
-    setIsStreaming(false)
-    setIsTyping(false)
-  }
+    const onTouch = (() => {
+      let lastY = null
+      return (e) => {
+        const y = e.touches[0]?.clientY
+        if (lastY !== null && y > lastY) {
+          userScrolledUpRef.current = true
+          setShowScrollButton(true)
+        }
+        lastY = y
+      }
+    })()
+
+    node.addEventListener('wheel', onWheel, { passive: true })
+    node.addEventListener('touchmove', onTouch, { passive: true })
+    wheelListenerRef.current = { el: node, onWheel, onTouch }
+  }, [])
 
   useEffect(() => {
-    // Switching to any chat (real or new-) — flush any partial assistant reply
-    // from the previous chat under its own session id before we tear down state.
-    if (sessionIdRef.current !== conversationId) {
-      flushAndCleanupStream()
+    if (!userScrolledUpRef.current) {
+      scrollToBottom()
     }
+    messagesRef.current = messages
+  }, [messages, scrollToBottom])
 
+  const applyStreamState = useCallback((state) => {
+    if (!state) {
+      setIsTyping(false)
+      setIsStreaming(false)
+      return
+    }
+    setMessages(state.messages.map((msg) => ({ ...msg })))
+    setIsTyping(state.isTyping)
+    setIsStreaming(state.isStreaming)
+  }, [])
+
+  const handleStreamEvent = useCallback((event, payload) => {
+    if (event === 'state') {
+      applyStreamState(payload)
+      return
+    }
+    if (event === 'complete' || event === 'error') {
+      setMessages(payload.messages.map((msg) => ({ ...msg, isTypingStream: false })))
+      setIsTyping(false)
+      setIsStreaming(false)
+      if (event === 'error' && payload.error?.status === 502) {
+        toast.error('AI service unavailable')
+      }
+    }
+  }, [applyStreamState])
+
+  const newSessionUnsubRef = useRef(null)
+
+  useEffect(() => {
+    return () => {
+      if (newSessionUnsubRef.current) {
+        newSessionUnsubRef.current()
+        newSessionUnsubRef.current = null
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (!conversationId || String(conversationId).startsWith('new-')) {
       setMessages([])
       sessionIdRef.current = null
       setHistoryMissing(false)
+      setIsTyping(false)
+      setIsStreaming(false)
       clearAttachments()
-      return
+      return undefined
     }
+
     sessionIdRef.current = conversationId
-    const stored = loadMessages(conversationId)
-    setMessages(
-      stored.map((msg) => ({ ...msg, isTypingStream: false })),
-    )
-    setHistoryMissing(stored.length === 0)
-    loadSessionAttachments(conversationId, stored)
+    const activeState = chatStreamManager.getState(conversationId)
+    if (activeState) {
+      applyStreamState(activeState)
+      setHistoryMissing(false)
+    } else {
+      const local = loadMessages(conversationId)
+      setMessages(local.map((msg) => ({ ...msg, isTypingStream: false })))
+      setHistoryMissing(local.length === 0)
+      setIsTyping(false)
+      setIsStreaming(false)
+
+      APIService.getSessionMessages(conversationId)
+        .then((serverMessages) => {
+          if (sessionIdRef.current !== conversationId) return
+          if (serverMessages?.length) {
+            const normalized = normalizeServerMessages(serverMessages)
+            setMessages(normalized)
+            saveMessages(conversationId, normalized)
+            setHistoryMissing(false)
+          }
+        })
+        .catch(() => {
+          // API unavailable — localStorage fallback already applied above
+        })
+    }
+    loadSessionAttachments(conversationId, loadMessages(conversationId))
+
+    const unsubscribe = chatStreamManager.subscribe(conversationId, handleStreamEvent)
+
+    return unsubscribe
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId])
+  }, [conversationId, applyStreamState, handleStreamEvent])
 
   const loadSessionAttachments = async (sessionId, storedMessages) => {
     try {
@@ -279,206 +346,29 @@ export function ChatArea({ conversationId }) {
     }
   }, [handleFileSelect])
 
-  useEffect(() => {
-    return () => {
-      // Component unmount: persist whatever streamed in before we vanish.
-      if (streamingSessionIdRef.current && messagesRef.current?.length) {
-        try {
-          saveMessages(streamingSessionIdRef.current, messagesRef.current)
-        } catch {
-          // ignore
-        }
-      }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort()
-      }
-      stopReveal()
-    }
-  }, [])
+  const handleScrollToBottom = useCallback(() => {
+    userScrolledUpRef.current = false
+    setShowScrollButton(false)
+    scrollToBottom()
+  }, [scrollToBottom])
 
   const handleStop = () => {
-    abortControllerRef.current?.abort()
-    stopReveal()
-    setIsStreaming(false)
-    setIsTyping(false)
-    // Save whatever streamed in before the user pressed stop.
-    if (streamingSessionIdRef.current && messagesRef.current?.length) {
-      try {
-        saveMessages(streamingSessionIdRef.current, messagesRef.current)
-      } catch {
-        // ignore
-      }
-      streamingSessionIdRef.current = null
+    const sessionId = sessionIdRef.current
+    if (sessionId) {
+      chatStreamManager.abortStream(sessionId)
     }
   }
 
-  const startReveal = (msgId) => {
-    if (revealTimerRef.current) return
-    revealTimerRef.current = setInterval(() => {
-      const target = targetTextRef.current
-      if (revealedLenRef.current < target.length) {
-        const remaining = target.length - revealedLenRef.current
-        const speed = remaining > 300 ? 3 : remaining > 100 ? 2 : 1
-        revealedLenRef.current = Math.min(revealedLenRef.current + speed, target.length)
-        const revealed = target.slice(0, revealedLenRef.current)
-        setMessages((prev) => {
-          const updated = prev.map((msg) =>
-            msg.id === msgId ? { ...msg, content: revealed } : msg,
-          )
-          persistStreamingSnapshot(updated)
-          return updated
-        })
-      }
-    }, 30)
-  }
-
-  const stopReveal = () => {
-    if (revealTimerRef.current) {
-      clearInterval(revealTimerRef.current)
-      revealTimerRef.current = null
-    }
-  }
-
-  const callChatAPI = async (message, sessionId, mode, { clientMessageId, attachments: attachmentsPayload } = {}) => {
-    setIsTyping(true)
-    setIsStreaming(true)
-    const assistantMessageId = Date.now() + 1
-    const startTime = performance.now()
-    targetTextRef.current = ''
-    revealedLenRef.current = 0
-    streamingSessionIdRef.current = sessionId
-    lastStreamSaveAtRef.current = 0
-
-    const controller = new AbortController()
-    abortControllerRef.current = controller
-    let streamMeta = null
-
-    try {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: assistantMessageId,
-          content: '',
-          isUser: false,
-          timestamp: new Date().toISOString(),
-          isTypingStream: true,
-        },
-      ])
-
-      const streamResult = await APIService.sendChatMessage(
-        sessionId,
-        message,
-        (fullText) => {
-          setIsTyping(false)
-          targetTextRef.current = fullText
-          startReveal(assistantMessageId)
-        },
-        controller.signal,
-        mode,
-        {
-          clientMessageId,
-          attachments: attachmentsPayload,
-          onMeta: (meta) => { streamMeta = meta },
-        },
-      )
-
-      const elapsed = ((performance.now() - startTime) / 1000).toFixed(1)
-
-      await new Promise((resolve) => {
-        const waitInterval = setInterval(() => {
-          if (revealedLenRef.current >= targetTextRef.current.length) {
-            clearInterval(waitInterval)
-            resolve()
-          }
-        }, 30)
-      })
-
-      stopReveal()
-      setIsTyping(false)
-
-      // Detect "stream succeeded but produced nothing the user can see":
-      // an HTTP 200 from /messages that emits no `delta.content` chunks, or
-      // an explicit error event in the SSE body. Without this guard the
-      // empty assistant placeholder gets filtered out of the render and the
-      // UI looks frozen / unresponsive.
-      const finalText = (targetTextRef.current || '').trim()
-      const streamError = streamResult?.error
-      const isEmpty = !finalText && !streamError
-
-      if (streamError || isEmpty) {
-        const errorBody = streamError
-          ? `The model didn't finish the response.\n\n**Server said:** ${streamError}\n\nPlease try again — if it keeps failing, the prompt may be too long or the upstream provider is having issues.`
-          : `The model returned an empty response.\n\nThis usually means the prompt was too long for the selected model's context window, an upstream provider hit a rate limit, or a tool call timed out on the backend.\n\nTry shortening your message, switching modes, or sending again.`
-
-        setMessages((prev) => {
-          const updated = prev.map((msg) =>
-            msg.id === assistantMessageId
-              ? {
-                  ...msg,
-                  content: errorBody,
-                  isTypingStream: false,
-                  responseTime: elapsed,
-                  meta: streamMeta || undefined,
-                  isError: true,
-                }
-              : msg,
-          )
-          saveMessages(sessionId, updated)
-          return updated
-        })
-
-        if (typeof console !== 'undefined') {
-          console.warn('[chat] empty/aborted stream from backend', {
-            sessionId,
-            streamError,
-            elapsedSec: elapsed,
-            meta: streamMeta,
-          })
-        }
-      } else {
-        setMessages((prev) => {
-          const updated = prev.map((msg) =>
-            msg.id === assistantMessageId
-              ? { ...msg, content: targetTextRef.current, isTypingStream: false, responseTime: elapsed, meta: streamMeta || undefined }
-              : msg,
-          )
-          saveMessages(sessionId, updated)
-          return updated
-        })
-      }
-    } catch (error) {
-      if (error.name === 'AbortError') return
-
-      stopReveal()
-      const errContent =
-        error.status === 502
-          ? 'AI service is currently unavailable. Please try again later.'
-          : 'Error sending message. Please try again.'
-
-      if (error.status === 502) {
-        toast.error('AI service unavailable')
-      }
-
-      setMessages((prev) => {
-        const updated = [
-          ...prev.filter((m) => m.id !== assistantMessageId),
-          {
-            id: Date.now() + 2,
-            content: errContent,
-            isUser: false,
-            timestamp: new Date().toISOString(),
-            isTypingStream: false,
-          },
-        ]
-        saveMessages(sessionId, updated)
-        return updated
-      })
-    } finally {
-      setIsTyping(false)
-      setIsStreaming(false)
-      abortControllerRef.current = null
-      streamingSessionIdRef.current = null
-    }
+  const callChatAPI = async (message, sessionId, mode, { clientMessageId, attachments: attachmentsPayload, initialMessages } = {}) => {
+    await chatStreamManager.startStream({
+      sessionId,
+      message,
+      mode,
+      clientMessageId,
+      attachments: attachmentsPayload,
+      initialMessages,
+      assistantMessageId: Date.now() + 1,
+    })
   }
 
   const handleSubmit = async (e) => {
@@ -495,6 +385,8 @@ export function ChatArea({ conversationId }) {
     const hasText = text.length > 0
 
     if (!hasText && !hasAttachments) return
+
+    userScrolledUpRef.current = false
 
     const clientMessageId = hasAttachments ? crypto.randomUUID() : null
 
@@ -520,7 +412,8 @@ export function ChatArea({ conversationId }) {
       clientMessageId,
     }
 
-    setMessages((prev) => [...prev, userMessage])
+    const messagesWithUser = [...messagesRef.current, userMessage]
+    setMessages(messagesWithUser)
     setHistoryMissing(false)
     setInputValue('')
     clearAttachments()
@@ -547,15 +440,19 @@ export function ChatArea({ conversationId }) {
 
     const apiText = text || (hasAttachments ? `Please analyze the attached file(s).` : '')
 
-    await callChatAPI(apiText, sessionId, chatMode, {
-      clientMessageId,
-      attachments: attachmentsPayload,
-    })
-
     if (isNewSession) {
       window.history.replaceState({}, '', `/chat/${sessionId}`)
       window.dispatchEvent(new Event('chat-created'))
+
+      if (newSessionUnsubRef.current) newSessionUnsubRef.current()
+      newSessionUnsubRef.current = chatStreamManager.subscribe(sessionId, handleStreamEvent)
     }
+
+    await callChatAPI(apiText, sessionId, chatMode, {
+      clientMessageId,
+      attachments: attachmentsPayload,
+      initialMessages: messagesWithUser,
+    })
   }
 
   const canSend = (inputValue.trim() || attachments.some((a) => a.status === UPLOAD_STATUS.READY)) && !hasUploading
@@ -746,7 +643,7 @@ export function ChatArea({ conversationId }) {
         </div>
       ) : (
         <>
-          <div className="flex-1 overflow-y-auto px-2 py-3 sm:p-4 w-full flex flex-col items-center [scrollbar-gutter:stable]">
+          <div ref={scrollContainerCallbackRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-2 py-3 sm:p-4 w-full flex flex-col items-center [scrollbar-gutter:stable]">
             <div className="w-full max-w-4xl space-y-4 sm:space-y-6 pb-4 sm:pb-6 mt-2 sm:mt-4">
               {messages.filter((msg) => msg.content?.trim() || msg.attachments?.length).map((msg) => (
                 <div
@@ -817,6 +714,20 @@ export function ChatArea({ conversationId }) {
               <div ref={messagesEndRef} />
             </div>
           </div>
+
+          {showScrollButton && (
+            <div className="absolute bottom-[140px] left-1/2 -translate-x-1/2 z-10">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 rounded-full shadow-lg bg-background/90 backdrop-blur border-border/80 hover:bg-muted transition-all"
+                onClick={handleScrollToBottom}
+              >
+                <ArrowDown className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
 
           <div className="w-full bg-background/95 backdrop-blur border-t px-2 py-3 sm:p-4 flex justify-center shrink-0">
             <div className="w-full max-w-4xl">{renderInputForm()}</div>

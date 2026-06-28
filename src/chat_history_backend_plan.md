@@ -16,7 +16,7 @@ Symptoms users hit because of this:
 - Switching browsers / devices loses every assistant reply.
 - Clearing site data loses every assistant reply.
 - Navigating to a different chat (or refreshing) mid-stream loses whatever
-  hadn't yet finished streaming.
+hadn't yet finished streaming.
 - Quota errors on the 5 MB `localStorage` cap silently drop saves.
 
 We've already shipped two frontend mitigations (incremental save during
@@ -55,7 +55,7 @@ CREATE TABLE chat_messages (
   -- attachments are already in their own table keyed by client_message_id;
   -- no need to denormalise here.
   created_at          TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
+);it
 
 CREATE INDEX chat_messages_session_created_idx
   ON chat_messages (session_id, created_at);
@@ -76,18 +76,17 @@ already streams the assistant reply back to the browser. Hook the writes in
 the same place that currently records `cost_events`:
 
 1. **As soon as the user message is received** (before any LLM call):
-   write one row with `role='user'`, `content=request.content`,
+  write one row with `role='user'`, `content=request.content`,
    `client_message_id=request.client_message_id`, `turn_id=<new>`.
 2. **At the end of each LLM hop** (where `cost_events` is currently appended):
-   write one row with `role='assistant'`, `content=<final assistant text for
-   this hop>`, plus the same `turn_id` so it groups with the cost rows.
+  write one row with `role='assistant'`, `content=<final assistant text for  this hop>`, plus the same `turn_id` so it groups with the cost rows.
    For multi-hop turns (tool use, fallbacks) emit one assistant row per hop
    the same way `cost_events` does.
 3. **On stream disconnect** (browser closed mid-stream): persist whatever was
-   already generated. The existing cost recorder already handles this — same
+  already generated. The existing cost recorder already handles this — same
    place, just also write the assistant text.
 4. **On error** (provider 5xx, content filter, etc.): write one row with
-   `role='assistant'`, `content=''` (or the partial text we generated),
+  `role='assistant'`, `content=''` (or the partial text we generated),
    `error_kind=<reason>`. This matches how `cost_events.error_kind` is
    recorded today.
 
@@ -104,14 +103,16 @@ messages for now and only persist web-chat history. Your call.)
 GET /chat/sessions/{session_id}/messages
 ```
 
-| Param | In | Type | Description |
-|---|---|---|---|
-| `session_id` | path | UUID | Required. The session to load. |
-| `limit` | query | int | Optional, default `200`, max `500`. Most-recent-first when paginating with `before`. |
-| `before` | query | ISO datetime | Optional. Return only messages with `created_at < before`. Used for "load older" scroll. |
-| `after` | query | ISO datetime | Optional. Used for resyncing after an offline period. |
 
-**Auth:** standard JWT bearer (same as everything else under `/chat/*`).
+| Param        | In    | Type         | Description                                                                              |
+| ------------ | ----- | ------------ | ---------------------------------------------------------------------------------------- |
+| `session_id` | path  | UUID         | Required. The session to load.                                                           |
+| `limit`      | query | int          | Optional, default `200`, max `500`. Most-recent-first when paginating with `before`.     |
+| `before`     | query | ISO datetime | Optional. Return only messages with `created_at < before`. Used for "load older" scroll. |
+| `after`      | query | ISO datetime | Optional. Used for resyncing after an offline period.                                    |
+
+
+**Auth:** standard JWT bearer (same as everything else under `/chat/`*).
 **Scoping:** must enforce `chat_messages.user_id == jwt.user_id`. Return 404
 (not 403) if the session belongs to another user, to avoid leaking session
 existence. Admins (`users.is_admin = true`) may pass `?user_id=<uuid>` to read
@@ -147,6 +148,7 @@ interface MessageRow {
 ```
 
 **Status codes:**
+
 - `200` with `[]` if the session exists but has no messages yet.
 - `404` if the session doesn't exist or isn't accessible by the caller.
 - `401` if the JWT is missing / expired (consistent with the rest of the API).
@@ -157,10 +159,10 @@ Sessions created before this lands have no rows in `chat_messages`. Two
 options:
 
 1. **Do nothing.** New chats persist, old ones stay localStorage-only. The
-   frontend already shows a friendly "history not on this device" card when a
+  frontend already shows a friendly "history not on this device" card when a
    session returns `[]`, so this is acceptable.
 2. **Best-effort backfill from cost_events.** Each `cost_events` row already
-   has a `turn_id` and per-hop metadata, but **does not** contain message
+  has a `turn_id` and per-hop metadata, but **does not** contain message
    text — so we can only backfill *skeletons*. Not worth the effort; just go
    with option 1.
 
@@ -198,25 +200,26 @@ No other frontend changes are required.
 A change is "done" when **all** of the following hold:
 
 1. `GET /chat/sessions/{id}/messages` returns the full conversation, in order,
-   including multi-hop assistant turns, for both web and (if implemented)
+  including multi-hop assistant turns, for both web and (if implemented)
    Slack-originated chats.
 2. Killing the streaming connection mid-reply (`SIGINT` the curl, close the
-   tab, kill nginx between Tomcat and client) still results in a partial
+  tab, kill nginx between Tomcat and client) still results in a partial
    assistant row being persisted, just like cost rows are persisted today.
 3. A user logging in from a clean browser sees their full history (titles +
-   messages) without touching localStorage.
+  messages) without touching localStorage.
 4. A different user calling `/chat/sessions/{otherId}/messages` gets `404`,
-   not `200` with someone else's data.
+  not `200` with someone else's data.
 5. The endpoint paginates correctly with `limit` + `before` (no N+1 from the
-   attachments inlining; one round trip per page).
+  attachments inlining; one round trip per page).
 
 ## 8. Where to ping if something breaks
 
 - If `chat_messages` writes silently stop, search backend logs for
-  `record_chat_message failed` (mirror the existing `record_chat_cost failed`
-  pattern).
+`record_chat_message failed` (mirror the existing `record_chat_cost failed`
+pattern).
 - If the endpoint is returning `[]` for sessions that clearly have rows in
-  the DB, check the user-scoping clause first — leakage protection is easy
-  to over-tighten.
+the DB, check the user-scoping clause first — leakage protection is easy
+to over-tighten.
 - If Slack DMs are missing history but web chats are fine, check whether the
-  `/cost/ingest` extension was deployed alongside the main API change.
+`/cost/ingest` extension was deployed alongside the main API change.
+

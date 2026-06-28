@@ -115,8 +115,8 @@ export function SearchDialog({ isOpen, onClose }) {
                     className="w-full justify-start space-x-2 h-10 px-2 hover:bg-muted"
                     onClick={() => handleSelect(conv)}
                   >
-                    <MessageCircle className="h-4 w-4 text-muted-foreground shrink-0" />
                     <span className="text-sm truncate">{conv.title}</span>
+                    <MessageCircle className="h-4 w-4 text-muted-foreground shrink-0" />
                   </Button>
                 ))}
               </div>

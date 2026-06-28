@@ -54,6 +54,15 @@ export const APIService = {
     return apiClient.get(`/chat/sessions/${sessionId}/attachments`);
   },
 
+  async getSessionMessages(sessionId, { limit, before, after } = {}) {
+    const params = new URLSearchParams();
+    if (limit) params.set('limit', limit);
+    if (before) params.set('before', before);
+    if (after) params.set('after', after);
+    const query = params.toString();
+    return apiClient.get(`/chat/sessions/${sessionId}/messages${query ? `?${query}` : ''}`);
+  },
+
   getMyUsage(params = {}) {
     const query = new URLSearchParams(params).toString();
     return apiClient.get(`/usage/me${query ? `?${query}` : ''}`);
